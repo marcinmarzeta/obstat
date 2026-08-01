@@ -219,6 +219,37 @@ policy needs to distinguish. A template that raises (`KeyError`, `IndexError`,
 `AttributeError`, `TypeError`) denies with the resource recorded as `unresolved`.
 It never falls back to a wildcard.
 
+#### The id is caller-controlled text, matched byte for byte
+
+A template interpolates arguments the caller supplied, and §2 matches the result
+with a case-sensitive glob. Where the system behind the tool treats two spellings
+as one object, the policy does not:
+
+```toml
+[[rule]]
+resource = "jira_issue:SEC-*"
+effect = "deny"
+```
+
+`transition_issue("SEC-1", …)` is denied. `transition_issue("sec-1", …)` is
+allowed, and Jira resolves both to the same issue.
+
+obstat does not fix this centrally, and folding case for everyone would be worse
+than the problem: whether `ACME-1` and `acme-1` name one thing is a fact about
+the caller's namespace, and case-folding one that is genuinely case-sensitive
+would silently widen every `allow` rule to cover objects it was never written
+for. **Normalising is the tool author's job.** It is what the callable form
+exists for:
+
+```python
+@guard(resource=lambda a: f"jira_issue:{a['issue_key'].upper()}")
+```
+
+Normalising the id does not loosen the approval binding. §5.2 binds an approval
+to `args_digest`, which is taken over the raw arguments, so an approval granted
+for `SEC-1` is refused when it is retried as `sec-1` — `approval_mismatch` —
+even though both produce the same resource.
+
 ### 3.4 The stop file
 
 Every other control answers "may this call proceed". This one answers "is
@@ -605,6 +636,14 @@ obstat being broken instead of as a typo.
 
 Ranked by how much they weaken the claim in the first paragraph.
 
+**A resource id is caller-controlled text and nothing normalises it.** §3.3. A
+policy written against `jira_issue:SEC-*` says nothing about `sec-1`, and the
+cost of noticing is a denial that silently did not happen. The callable form of
+`resource` is the entire answer today, which means the answer is applied only
+where a tool author thought of the question. What is missing is not a fold — that
+would be wrong for case-sensitive namespaces — but a way for a *policy* to say
+which of its rules describe a namespace that is case-insensitive.
+
 **No approver authority.** §5.4. Anything beyond a single operator needs the
 approver to be authenticated and distinct from the requester.
 
@@ -670,6 +709,9 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | a torn line does not swallow the next record | `TestChain::test_a_torn_line_does_not_swallow_the_next_record` |
 | `subject` unadvertised, approval id advertised | `test_injected_subject_is_not_advertised…` |
 | the resource comes from the arguments | `test_resource_comes_from_the_arguments` |
+| a template matches only the spelling it was given | `test_a_template_matches_only_the_spelling_it_was_given` |
+| a callable resource normalises what policy matches | `test_a_callable_resource_normalises_what_policy_matches` |
+| an unknown effect is refused | `test_an_unknown_effect_is_refused` |
 | an unresolvable resource denies | `test_an_unresolvable_resource_denies` |
 | arguments are fingerprinted, not stored | `test_arguments_are_fingerprinted_not_stored` |
 | only the named arguments are recorded | `test_only_the_named_arguments_are_recorded` |

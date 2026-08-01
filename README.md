@@ -157,6 +157,18 @@ permission, and a missing policy file is an error rather than an implicit allow.
 Patterns are globs. The file is re-read when it changes, so editing policy does
 not need a restart.
 
+They are matched **case-sensitively**, against an id built from arguments the
+caller sent. If your namespace is not case-sensitive — Jira keys, most
+filesystems — a rule written for `jira_issue:SEC-*` will not cover `sec-1`, and
+nothing will tell you. Normalise the id where you build it:
+
+```python
+@guard(resource=lambda a: f"jira_issue:{a['issue_key'].upper()}")
+```
+
+That is what the callable form is for; [§3.3](docs/obstat-spec.md#33-resource-resolution)
+has the whole story, including why obstat does not fold case for you.
+
 ## The order
 
 ```

@@ -69,6 +69,15 @@ def test_a_failing_body_still_leaves_both_records(workspace):
     assert entries[1] == {**entries[1], "phase": "outcome", "ok": False, "error": "ValueError"}
 
 
+def test_an_unknown_effect_is_refused(workspace):
+    """`policy.EFFECTS` is derived from the `Effect` literal; this is what fails
+    if the two ever come apart."""
+    workspace('[[rule]]\neffect = "permit"\n')
+
+    with pytest.raises(policy.PolicyError, match="allow, deny, approve"):
+        policy.decide(tool="t", subject="anonymous", resource="r")
+
+
 def test_no_rule_is_a_deny(workspace):
     workspace('[[rule]]\ntool = "something_else"\neffect = "allow"\n')
 
@@ -175,6 +184,42 @@ def test_resource_comes_from_the_arguments(workspace):
 
     with pytest.raises(Denied):
         touch("OTHER-1")
+
+
+def test_a_template_matches_only_the_spelling_it_was_given(workspace):
+    """The hazard §3.3 documents, pinned so it cannot be fixed by accident.
+
+    A glob is case-sensitive and a template interpolates whatever the caller
+    sent, so a deny rule covers one spelling of an id and not another — even
+    where the system behind the tool resolves both to one object.
+    """
+    workspace(
+        '[[rule]]\nresource = "jira_issue:SEC-*"\neffect = "deny"\n[[rule]]\neffect = "allow"\n'
+    )
+
+    @guard(resource="jira_issue:{key}")
+    def touch(key: str) -> str:
+        return key
+
+    with pytest.raises(Denied):
+        touch("SEC-1")
+    assert touch("sec-1") == "sec-1"
+
+
+def test_a_callable_resource_normalises_what_policy_matches(workspace):
+    """And the fix §3.3 prescribes, which is why `resource` takes a callable."""
+    workspace(
+        '[[rule]]\nresource = "jira_issue:SEC-*"\neffect = "deny"\n[[rule]]\neffect = "allow"\n'
+    )
+
+    @guard(resource=lambda a: f"jira_issue:{a['key'].upper()}")
+    def touch(key: str) -> str:  # pragma: no cover - must never run
+        raise AssertionError("body ran for a resource the policy denies")
+
+    for spelling in ("SEC-1", "sec-1", "Sec-1"):
+        with pytest.raises(Denied):
+            touch(spelling)
+    assert {r["resource"] for r in record.read()} == {"jira_issue:SEC-1"}
 
 
 def test_an_unresolvable_resource_denies(workspace):
