@@ -16,6 +16,9 @@ import pytest
 from obstat import Denied, Subject, guard, policy, record, set_subject_resolver
 from obstat import approval as approval_module
 
+# `obstat.guard` the name is the decorator, so reach the module's codes directly.
+from obstat.guard import HALTED, RESOURCE_UNRESOLVED, SUBJECT_SUPPLIED
+
 ALLOW_ALL = '[[rule]]\neffect = "allow"\n'
 
 
@@ -78,7 +81,7 @@ def test_no_rule_is_a_deny(workspace):
 
     entries = record.read()
     assert entries[0]["effect"] == "deny"
-    assert entries[0]["reason"] == "no rule matched"
+    assert entries[0]["code"] == policy.NO_RULE_MATCHED
     # The reference in the message is the record, so an operator can find it.
     assert entries[0]["id"] == caught.value.record_id
     assert entries[0]["id"] in str(caught.value)
@@ -107,7 +110,7 @@ def test_a_caller_cannot_supply_its_own_subject(workspace):
     with pytest.raises(Denied):
         whoami(subject=Subject(id="root", kind="human", verified=True))
 
-    assert record.read()[-1]["reason"] == "caller supplied a subject"
+    assert record.read()[-1]["code"] == SUBJECT_SUPPLIED
 
 
 def test_a_subject_that_would_collide_is_refused_at_decoration():
@@ -184,6 +187,7 @@ def test_an_unresolvable_resource_denies(workspace):
     with pytest.raises(Denied):
         touch("x")
     assert record.read()[0]["resource"] == "unresolved"
+    assert record.read()[0]["code"] == RESOURCE_UNRESOLVED
 
 
 def test_arguments_are_fingerprinted_not_stored(workspace):
@@ -211,7 +215,7 @@ def test_the_stop_file_denies_everything(workspace):
     halt.write_text("stopped")
     with pytest.raises(Denied):
         anything()
-    assert record.read()[-1]["reason"] == "halted"
+    assert record.read()[-1]["code"] == HALTED
     halt.unlink()
     assert anything() == "ran"
 
@@ -248,7 +252,7 @@ class TestApproval:
         # Single use: the same id a second time is a denial, not a second run.
         with pytest.raises(Denied):
             transition("ACME-1", to="Done", obstat_approval_id=approval_id)
-        assert record.read()[-1]["reason"] == "approval already used"
+        assert record.read()[-1]["code"] == approval_module.USED
 
     def test_an_approval_does_not_travel_to_another_call(self, workspace):
         workspace(self.POLICY)
@@ -259,12 +263,18 @@ class TestApproval:
         # Approved for ACME-1. Retrying against a different issue must fail.
         with pytest.raises(Denied):
             transition("OTHER-9", to="Done", obstat_approval_id=approval_id)
-        assert "different resource" in record.read()[-1]["reason"]
+        written = record.read()[-1]
+        # The code is the contract; the prose is asserted only because *which*
+        # binding failed is detail the code deliberately does not carry.
+        assert written["code"] == approval_module.MISMATCH
+        assert "different resource" in written["reason"]
 
         # And approved for "Done", so a different transition must fail too.
         with pytest.raises(Denied):
             transition("ACME-1", to="Deleted", obstat_approval_id=approval_id)
-        assert "different args_digest" in record.read()[-1]["reason"]
+        written = record.read()[-1]
+        assert written["code"] == approval_module.MISMATCH
+        assert "different args_digest" in written["reason"]
 
     def test_asking_twice_rejoins_one_approval(self, workspace):
         workspace(self.POLICY)
@@ -324,7 +334,7 @@ class TestApproval:
 
         with pytest.raises(Denied):
             transition("ACME-1", to="Done", obstat_approval_id=approval_id)
-        assert record.read()[-1]["reason"] == "approval is denied"
+        assert record.read()[-1]["code"] == approval_module.DENIED
 
     def test_an_invented_approval_id_denies(self, workspace):
         workspace(self.POLICY)
@@ -332,7 +342,7 @@ class TestApproval:
 
         with pytest.raises(Denied):
             transition("ACME-1", to="Done", obstat_approval_id="deadbeef")
-        assert record.read()[-1]["reason"] == "unknown approval"
+        assert record.read()[-1]["code"] == approval_module.UNKNOWN
 
 
 class TestChain:

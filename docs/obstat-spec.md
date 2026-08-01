@@ -134,17 +134,17 @@ async def transition_issue(issue_key: str, transition: str) -> str: ...
 
 Normative. Each step's failure is terminal.
 
-| # | Step | Deny reason |
-|---|---|---|
-| 1 | Reject a caller-supplied `subject` argument | `caller supplied a subject` |
-| 1b | Bind arguments to the tool's signature | `arguments do not fit the tool: …` |
-| 2 | Stop file present (§3.4) | `halted` |
-| 3 | Resolve the resource id from the arguments | `resource template did not resolve: …` |
-| 4 | Policy decision (§2) | `no rule matched` · `rule {n}` |
-| 5 | Approval, if policy said `approve` (§5) | — returns `approval_required`, or a §5.3 reason |
-| 6 | **Write the decision record — durable** (§6) | propagates |
-| 7 | Execute the tool body | — |
-| 8 | Write the outcome record, best effort | — never denies |
+| # | Step | Code (§6.4) | Prose reason |
+|---|---|---|---|
+| 1 | Reject a caller-supplied `subject` argument | `subject_supplied` | `caller supplied a subject` |
+| 1b | Bind arguments to the tool's signature | `arguments_rejected` | `arguments do not fit the tool: …` |
+| 2 | Stop file present (§3.4) | `halted` | `halted` |
+| 3 | Resolve the resource id from the arguments | `resource_unresolved` | `resource template did not resolve: …` |
+| 4 | Policy decision (§2) | `no_rule_matched` · `rule_matched` | `no rule matched` · `rule {n}` |
+| 5 | Approval, if policy said `approve` (§5) | §5.3 | — returns `approval_required`, or a §5.3 reason |
+| 6 | **Write the decision record — durable** (§6) | — | propagates |
+| 7 | Execute the tool body | — | — |
+| 8 | Write the outcome record, best effort | — | never denies |
 
 **Step 6 before step 7 is the whole point.** `record.decision()` returns only
 after `write` and `fsync` — and, on the write that creates the log file, an
@@ -322,15 +322,20 @@ pending ──approve──► approved ──use──► consumed
    └──deny────────► denied
 ```
 
-| state at retry | result | reason recorded |
-|---|---|---|
-| binding mismatch | deny | `approval was granted for a different {field}` |
-| absent | deny | `unknown approval` |
-| `pending` | **§5.1 payload again** | `approval_required` |
-| `denied` | deny | `approval is denied` |
-| `consumed` | deny | `approval already used` |
-| past `expires` | deny | `approval expired` |
-| `approved`, all checks pass | allow | — |
+| state at retry | result | code recorded | prose reason |
+|---|---|---|---|
+| binding mismatch | deny | `approval_mismatch` | `approval was granted for a different {field}` |
+| absent | deny | `approval_unknown` | `unknown approval` |
+| `pending` | **§5.1 payload again** | — | — |
+| `denied` | deny | `approval_denied` | `approval is denied` |
+| `consumed` | deny | `approval_used` | `approval already used` |
+| past `expires` | deny | `approval_expired` | `approval expired` |
+| `approved`, all checks pass | allow | `rule_matched` | `rule {n}` |
+
+`approval_pending` is the one code the guard **branches on** rather than merely
+records: it is what distinguishes "come back later" from a denial. Before codes
+existed that branch compared an interpolated sentence, so renaming a SQLite state
+would have turned every slow approval into a failed call.
 
 The binding check runs **before** anything is said about state, so a caller
 holding someone else's id learns that it does not match this call rather than
@@ -374,7 +379,7 @@ fragment, so one failed write costs one record instead of two — `obstat verify
 reports the fragment and everything after it still reads.
 
 ```json
-{"schema": 2,
+{"schema": 3,
  "id": "6430f1a38f8e470a898ca9a116dfb4cc",
  "ts": 1785545412.241792,
  "phase": "decision",
@@ -382,6 +387,7 @@ reports the fragment and everything after it still reads.
  "subject": "anonymous",
  "resource": "doc:q3-report",
  "effect": "allow",
+ "code": "rule_matched",
  "reason": "rule 1",
  "rule": 1,
  "args": "sha256:ae32e699…",
@@ -395,9 +401,9 @@ reports the fragment and everything after it still reads.
 the policy file, so a record points at the line that decided it. `prev` and
 `hash` are the chain (§6.3).
 
-Schema 2 added `prev` and `hash`. Records written at schema 1 have neither and
-verify as *unverifiable* rather than as damaged — a log that predates the chain
-is not evidence of tampering.
+Schema 2 added `prev` and `hash`; schema 3 added `code`. Records written at
+schema 1 have no chain fields and verify as *unverifiable* rather than as damaged
+— a log that predates the chain is not evidence of tampering.
 
 `via` (§1) is present on an `allow` record only when the subject carries a
 delegation chain: `"via": ["human:ana"]`. It is omitted rather than written empty,
@@ -415,7 +421,7 @@ approved, which is what the record is for.
 ### 6.2 Outcome records
 
 ```json
-{"schema": 2, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
+{"schema": 3, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
  "prev": "…", "hash": "…"}
 ```
 
@@ -483,6 +489,27 @@ A damaged log does not stop a guarded call. The new record chains from `null` an
 `obstat verify` reports the break, because refusing to serve on a corrupt log
 would let anyone who can append one byte turn every guarded tool off.
 
+### 6.4 Codes and prose
+
+Every decision record carries both:
+
+| field | for | stability |
+|---|---|---|
+| `code` | filtering a log, branching in code, asserting in tests | **stable**; a change is a schema change |
+| `reason` | the operator reading one record | free text, may be reworded at any time |
+
+The full set of codes is the §3.1 and §5.3 tables. They are lower-case snake, the
+same shape as `effect`.
+
+The split exists because the two jobs conflict. `approval was granted for a
+different resource` tells an examiner exactly what happened and is useless to
+`jq`; `approval_mismatch` is the reverse. Carrying one field and asking it to do
+both is how a log ends up with code branching on an interpolated sentence — which
+is what obstat did until schema 3, in the one place it mattered most (§5.3).
+
+Prose still carries detail no code should: which binding failed, which exception a
+resource template raised. Assert on the code; read the reason.
+
 ---
 
 ## 7. Configuration
@@ -507,10 +534,6 @@ Ranked by how much they weaken the claim in the first paragraph.
 approver to be authenticated and distinct from the requester.
 
 **The stop file is all-or-nothing.** §3.4.
-
-**Deny reasons are prose, not codes.** They are stable enough to assert on in
-tests and unstable enough that no one should parse them. They want to be an enum
-with the prose as a separate field.
 
 **The chain is unkeyed, and nothing anchors its head.** §6.3 makes an edit or a
 deletion visible, which is where most of the value is — but anyone who can write

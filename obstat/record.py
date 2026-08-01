@@ -25,7 +25,7 @@ from typing import Any
 
 from . import paths
 
-SCHEMA = 2
+SCHEMA = 3
 
 # (log path, hash of the last record this process wrote). Re-read when the path
 # changes, the way policy re-reads its file.
@@ -149,6 +149,7 @@ def decision(
     subject: str,
     resource: str,
     effect: str,
+    code: str,
     reason: str,
     rule: int | None,
     args_digest: str,
@@ -172,6 +173,7 @@ def decision(
             "subject": subject,
             "resource": resource,
             "effect": effect,
+            "code": code,
             "reason": reason,
             "rule": rule,
             "args": args_digest,

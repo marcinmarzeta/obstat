@@ -26,6 +26,12 @@ from . import approval, paths, policy, record
 ANONYMOUS = policy.ANONYMOUS
 APPROVAL_ARG = "obstat_approval_id"
 
+# Stable codes for the refusals `guard` raises itself (§6.4).
+SUBJECT_SUPPLIED = "subject_supplied"
+ARGUMENTS_REJECTED = "arguments_rejected"
+HALTED = "halted"
+RESOURCE_UNRESOLVED = "resource_unresolved"
+
 _BY_POSITION = (
     inspect.Parameter.POSITIONAL_ONLY,
     inspect.Parameter.POSITIONAL_OR_KEYWORD,
@@ -199,6 +205,7 @@ def guard(
         )
 
         def refuse(
+            code: str,
             reason: str,
             *,
             subject: str = ANONYMOUS,
@@ -213,6 +220,7 @@ def guard(
                     subject=subject,
                     resource=resource_id or f"tool:{name}",
                     effect="deny",
+                    code=code,
                     reason=reason,
                     rule=rule,
                     args_digest=args_digest or record.digest({}),
@@ -228,12 +236,12 @@ def guard(
             #    say who it is. Denied before anything reads it — including the
             #    record, which would otherwise quote an attacker's string.
             if "subject" in kwargs:
-                raise refuse("caller supplied a subject")
+                raise refuse(SUBJECT_SUPPLIED, "caller supplied a subject")
 
             try:
                 bound = bind_against.bind_partial(*args, **kwargs)
             except TypeError as exc:
-                raise refuse(f"arguments do not fit the tool: {exc}") from exc
+                raise refuse(ARGUMENTS_REJECTED, f"arguments do not fit the tool: {exc}") from exc
             bound.apply_defaults()
             call_args = dict(bound.arguments)
             args_digest = record.digest(call_args)
@@ -244,13 +252,14 @@ def guard(
             # 2. The stop file, before policy: stopping must not depend on the
             #    policy file still being parseable.
             if paths.halt().exists():
-                raise refuse("halted", subject=subject, args_digest=args_digest)
+                raise refuse(HALTED, "halted", subject=subject, args_digest=args_digest)
 
             # 3. Resource.
             try:
                 target = _resource_for(resource, name, call_args)
             except (KeyError, IndexError, AttributeError, TypeError) as exc:
                 raise refuse(
+                    RESOURCE_UNRESOLVED,
                     f"resource template did not resolve: {exc!r}",
                     subject=subject,
                     resource_id="unresolved",
@@ -263,13 +272,13 @@ def guard(
                 refuse, subject=subject, resource_id=target, args_digest=args_digest
             )
             if verdict.effect == "deny":
-                raise refusal(verdict.reason, rule=verdict.rule)
+                raise refusal(verdict.code, verdict.reason, rule=verdict.rule)
 
             # 5. Approval.
             if verdict.effect == "approve":
                 spent = False
                 if approval_id is not None:
-                    ok, why = approval.consume(
+                    ok, code, why = approval.consume(
                         approval_id,
                         tool=name,
                         subject=subject,
@@ -280,8 +289,8 @@ def guard(
                     # denial. Telling an agent "do not retry" because a human is
                     # slow turns a working control into a failed call, and makes
                     # the approval useless by the time it arrives.
-                    if not ok and why != approval.STILL_PENDING:
-                        raise refusal(why, rule=verdict.rule, approval_id=approval_id)
+                    if not ok and code != approval.PENDING:
+                        raise refusal(code, why, rule=verdict.rule, approval_id=approval_id)
                     spent = ok
 
                 if not spent:
@@ -295,6 +304,7 @@ def guard(
                         subject=subject,
                         resource=target,
                         effect="approval_required",
+                        code=verdict.code,
                         reason=verdict.reason,
                         rule=verdict.rule,
                         args_digest=args_digest,
@@ -327,6 +337,7 @@ def guard(
                 subject=checked.subject_name,
                 resource=checked.resource,
                 effect="allow",
+                code=checked.verdict.code,
                 reason=checked.verdict.reason,
                 rule=checked.verdict.rule,
                 args_digest=checked.args_digest,

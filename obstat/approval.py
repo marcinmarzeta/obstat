@@ -24,9 +24,15 @@ from . import paths
 
 TTL_SECONDS = 900  # 15 minutes: long enough to reach a human, short enough to expire
 
-# A retry that arrives before anyone has answered is not a failure, so `guard`
-# checks for exactly this reason and hands back the phase-1 payload again.
-STILL_PENDING = "approval is pending"
+# Stable codes (§6.4). `guard` branches on PENDING — a retry that arrives before
+# anyone has answered is not a failure — so these are load-bearing, not labels.
+UNKNOWN = "approval_unknown"
+MISMATCH = "approval_mismatch"
+USED = "approval_used"
+DENIED = "approval_denied"
+PENDING = "approval_pending"
+EXPIRED = "approval_expired"
+SPENT = "approval_spent"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS approvals (
@@ -140,18 +146,20 @@ def resolve(approval_id: str, *, approved: bool, by: str) -> bool:
 
 def consume(
     approval_id: str, *, tool: str, subject: str, resource: str, args_digest: str
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str]:
     """Spend an approval on exactly the call it was granted for.
 
-    Returns (ok, reason). The check and the state change happen inside one
-    IMMEDIATE transaction, so two concurrent retries cannot both win.
+    Returns (ok, code, reason): the code is the contract, the reason is the prose
+    that goes in the record and carries the detail the code cannot. The check and
+    the state change happen inside one IMMEDIATE transaction, so two concurrent
+    retries cannot both win.
     """
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone()
             if row is None:
-                return False, "unknown approval"
+                return False, UNKNOWN, "unknown approval"
             # The binding check comes first. Each of these being wrong means the
             # agent is retrying with an approval granted for a different call, and
             # answering that before saying anything about state keeps this from
@@ -163,16 +171,19 @@ def consume(
                 ("args_digest", args_digest),
             ):
                 if row[field] != actual:
-                    return False, f"approval was granted for a different {field}"
+                    # One code, and the prose names which field: an examiner wants
+                    # to know it was the resource, a caller is told nothing at all.
+                    return False, MISMATCH, f"approval was granted for a different {field}"
             if row["state"] == "consumed":
-                return False, "approval already used"
+                return False, USED, "approval already used"
             if row["state"] != "approved":
-                return False, f"approval is {row['state']}"
+                code = PENDING if row["state"] == "pending" else DENIED
+                return False, code, f"approval is {row['state']}"
             if row["expires"] < time.time():
-                return False, "approval expired"
+                return False, EXPIRED, "approval expired"
             conn.execute("UPDATE approvals SET state='consumed' WHERE id=?", (approval_id,))
             conn.execute("COMMIT")
-            return True, "approved"
+            return True, SPENT, "approved"
         except BaseException:
             conn.execute("ROLLBACK")
             raise

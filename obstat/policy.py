@@ -20,6 +20,11 @@ EFFECTS: tuple[Effect, ...] = ("allow", "deny", "approve")
 
 ANONYMOUS = "anonymous"
 
+# Stable codes (§6.4). The prose beside them is for whoever reads the record; only
+# the code is safe to branch on or to filter a log by.
+NO_RULE_MATCHED = "no_rule_matched"
+RULE_MATCHED = "rule_matched"
+
 
 class PolicyError(RuntimeError):
     """The policy file is missing or malformed. Raised on the first guarded call."""
@@ -43,11 +48,12 @@ class Rule:
 @dataclass(frozen=True)
 class Decision:
     effect: Effect
+    code: str
     reason: str
     rule: int | None  # index into the file, so a record points at the line that decided
 
 
-_DENY_UNMATCHED = Decision("deny", "no rule matched", None)
+_DENY_UNMATCHED = Decision("deny", NO_RULE_MATCHED, "no rule matched", None)
 
 # (path, mtime, size) -> rules. Editing the policy takes effect on the next call
 # rather than the next restart; a stat() per call is cheaper than the confusion.
@@ -105,5 +111,5 @@ def load(path: Path | None = None) -> list[Rule]:
 def decide(*, tool: str, subject: str, resource: str, path: Path | None = None) -> Decision:
     for index, rule in enumerate(load(path)):
         if rule.matches(tool=tool, subject=subject, resource=resource):
-            return Decision(rule.effect, f"rule {index}", index)
+            return Decision(rule.effect, RULE_MATCHED, f"rule {index}", index)
     return _DENY_UNMATCHED
