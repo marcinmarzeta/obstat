@@ -707,6 +707,9 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | a removed record is caught | `TestChain::test_a_removed_record_is_caught` |
 | recomputing one hash does not hide the edit | `TestChain::test_a_reused_hash_does_not_hide_an_edit` |
 | a torn line does not swallow the next record | `TestChain::test_a_torn_line_does_not_swallow_the_next_record` |
+| concurrent processes interleave records without splitting one | `TestConcurrency::test_two_processes_write_one_log` |
+| within one process the chain stays a line | `TestConcurrency::test_threads_do_not_split_a_record` |
+| a forked chain verifies | `TestConcurrency::test_a_forked_chain_still_verifies` |
 | `subject` unadvertised, approval id advertised | `test_injected_subject_is_not_advertised…` |
 | the resource comes from the arguments | `test_resource_comes_from_the_arguments` |
 | a template matches only the spelling it was given | `test_a_template_matches_only_the_spelling_it_was_given` |

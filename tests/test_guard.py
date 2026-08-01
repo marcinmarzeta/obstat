@@ -10,6 +10,10 @@ from __future__ import annotations
 
 import inspect
 import json
+import subprocess
+import sys
+import threading
+import time
 
 import pytest
 
@@ -538,6 +542,122 @@ class TestChain:
         # Exactly one problem, and it is the fragment. Anything less readable than
         # that — a spliced decision record, a dangling outcome — shows up here too.
         assert record.verify(log) == ["line 5: not a record"]
+
+
+CHILD = """
+import pathlib, sys, time
+from obstat import guard
+
+
+@guard()
+def touch(n: int) -> int:
+    return n
+
+
+pathlib.Path(sys.argv[1]).write_text("ready")
+go = pathlib.Path(sys.argv[2])
+while not go.exists():
+    time.sleep(0.005)
+for i in range({calls}):
+    touch(i)
+"""
+
+
+class TestConcurrency:
+    """Two writers, one log. §6 says records interleave but never split; §6.3
+    says the chain forks across processes and verification tolerates it.
+
+    Both are claims about what happens when nothing is coordinating the writers,
+    which is the state a served tool is in and the state no other test puts it
+    in.
+    """
+
+    CALLS = 15
+
+    def test_threads_do_not_split_a_record(self, workspace):
+        """One process, one lock: every record whole, and the chain still a line."""
+        workspace(ALLOW_ALL)
+
+        @guard()
+        def touch(n: int) -> int:
+            return n
+
+        threads = [
+            threading.Thread(target=lambda: [touch(i) for i in range(self.CALLS)]) for _ in range(4)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        # read() parses every line, so a split record fails here before anything
+        # is asserted about it.
+        entries = record.read()
+        assert len(entries) == 4 * self.CALLS * 2  # a decision and an outcome each
+
+        # `_chain_lock` covers hashing and appending together, so within one
+        # process the result is a line: one root, and no record followed twice.
+        prevs = [entry["prev"] for entry in entries]
+        assert prevs.count(None) == 1
+        assert len(prevs) == len(set(prevs))
+        assert record.verify() == []
+
+    def test_two_processes_write_one_log(self, workspace, tmp_path):
+        """No inter-process lock, so this is O_APPEND and one write() syscall
+        doing the work (§6). Released together, because two writers that happen
+        to take turns prove nothing."""
+        workspace(ALLOW_ALL)
+        script = tmp_path / "child.py"
+        script.write_text(CHILD.format(calls=self.CALLS), encoding="utf-8")
+
+        go = tmp_path / "go"
+        children = []
+        for name in ("a", "b"):
+            ready = tmp_path / f"ready-{name}"
+            children.append(
+                (
+                    ready,
+                    subprocess.Popen([sys.executable, str(script), str(ready), str(go)]),
+                )
+            )
+        deadline = time.time() + 30
+        while not all(ready.exists() for ready, _ in children):
+            assert time.time() < deadline, "a child never started"
+            time.sleep(0.01)
+        go.write_text("go")
+
+        for _, child in children:
+            assert child.wait(timeout=60) == 0
+
+        entries = record.read()
+        assert len(entries) == 2 * self.CALLS * 2
+        assert record.verify() == []
+
+    def test_a_forked_chain_still_verifies(self, workspace):
+        """What a second process does, done deliberately: carry on from the
+        record you last saw, not from the one that is now on the end.
+
+        Reproduced in-process because two real processes might take turns and
+        never fork at all, and a test that only sometimes tests the thing is
+        worse than no test.
+        """
+        workspace(ALLOW_ALL)
+
+        @guard()
+        def touch(what: str) -> str:
+            return what
+
+        touch("first")
+        branch = record._chain  # what another process would still be holding
+        touch("second")
+        record._chain = branch
+        touch("third")
+
+        prevs = [entry["prev"] for entry in record.read()]
+        assert len(prevs) != len(set(prevs)), "nothing forked, so nothing was tested"
+        # Every `prev` still names a record earlier in the file, which is all
+        # verification asks of it — a fork is not damage.
+        assert record.verify() == []
 
 
 async def test_async_tools_go_through_the_same_gate(workspace):

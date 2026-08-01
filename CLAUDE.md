@@ -7,7 +7,7 @@ that weakens that ordering is a bug, not an optimisation.
 ## Commands
 
 ```bash
-uv run pytest -q          # 39 tests, ~0.3s
+uv run pytest -q          # 42 tests, ~0.9s (TestConcurrency spawns two children)
 uv run ruff check .
 uv run ruff format .
 ```
