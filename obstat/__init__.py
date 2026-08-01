@@ -8,4 +8,4 @@ from .guard import Denied, Subject, guard, set_subject_resolver
 from .policy import PolicyError
 
 __all__ = ["Denied", "PolicyError", "Subject", "guard", "set_subject_resolver"]
-__version__ = "0.1.1"
+__version__ = "0.2.0"
