@@ -44,6 +44,11 @@ when the spec is renumbered.
 uploads via PyPI trusted publishing (OIDC — there is no token anywhere). **A PyPI
 version is immutable**: a bad build can be superseded, never withdrawn.
 
+**A green publish does not mean a green CI.** The two workflows run
+independently, and `publish.yml` builds on ubuntu only — 0.3.1 went to PyPI while
+`ci.yml` was failing on the Windows leg. Check both, and prefer pushing the
+commit and letting CI finish before pushing the tag.
+
 ## Gotchas
 
 `uv run --with /path/to/obstat` serves a **cached wheel** and will happily run
