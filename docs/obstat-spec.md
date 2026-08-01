@@ -1,7 +1,7 @@
 # obstat — specification
 
-Normative. Where this document and the code disagree, one of them is a bug; say
-which in an issue.
+Normative, §10 excepted. Where this document and the code disagree, one of them
+is a bug; say which in an issue.
 
 The claim obstat makes is narrow: **a tool call leaves a written decision before
 it runs.** Everything below exists to make that claim true without an identity
@@ -149,7 +149,9 @@ Normative. Each step's failure is terminal.
 **Step 6 before step 7 is the whole point.** `record.decision()` returns only
 after `write` and `fsync` — and, on the write that creates the log file, an
 `fsync` of the containing directory too, since a synced file whose directory
-entry is not synced can survive a crash with nothing pointing at it. If the
+entry is not synced can survive a crash with nothing pointing at it. That
+directory sync opens a directory as a file descriptor, which POSIX allows and
+Windows does not — §8. If the
 process dies between 6 and 7, the
 record says `allow` and no outcome follows, which reads as "authorised, did not
 complete" — a state an examiner can act on. The reverse ordering produces
@@ -533,7 +535,14 @@ Ranked by how much they weaken the claim in the first paragraph.
 **No approver authority.** §5.4. Anything beyond a single operator needs the
 approver to be authenticated and distinct from the requester.
 
-**The stop file is all-or-nothing.** §3.4.
+**An approver cannot see what they are approving.** `obstat pending` shows the
+tool, the subject and the resource; the arguments are a digest and nothing more
+(§6.1). Where the resource template carries the meaning — `doc:q3-report` — that
+is enough to decide on. Where it does not, and `send_email` resolves to
+`tool:send_email`, the human presses approve blind, and an approval nobody can
+review is a rubber stamp with a record behind it. The answer is a per-key
+allowlist on `@guard` (`record_args=("issue_key",)`) surfaced in `obstat
+pending`. Recording every argument is not the answer, for the reason §6.1 gives.
 
 **The chain is unkeyed, and nothing anchors its head.** §6.3 makes an edit or a
 deletion visible, which is where most of the value is — but anyone who can write
@@ -542,8 +551,31 @@ dangling. The answers are a head published where the log's owner cannot reach it
 or append-only storage. Neither is here, so this is tamper-evidence and not proof
 against the operator.
 
+**The stop file is all-or-nothing.** §3.4.
+
+**Nothing helps you write or test a policy.** A missing file raises `PolicyError`
+on the first guarded call and points at a README (§2.1); a malformed one is
+discovered the same way, in production, by a real call. No command writes a
+starting policy, and none answers what a policy would decide for a given tool,
+subject and resource without making the call. §2.2 re-reads on change because
+operators do not trust that an edit took effect — and then gives them no way to
+look.
+
+**The approval TTL is fixed.** 900 seconds, a module constant, absent from §7
+while every path beside it is configurable. A request raised after hours expires
+unanswered, and §5.3 is explicit that expiry denies.
+
 **No retention or rotation on the log.** It grows without bound, and nothing says
-how long a record must be kept.
+how long a record must be kept. Rotation has to carry the chain across files as
+well, or every new file begins at `prev: null` and a deletion at the seam is
+indistinguishable from a rollover.
+
+**POSIX only, without saying so.** The directory sync in §3.1 opens a directory
+as a file descriptor, which Windows refuses, so the write that *creates* the log
+fails there; every write after it would be fine, which makes this a first-run
+failure rather than a degradation. Either that sync is skipped where it cannot be
+done — losing the guarantee it exists for — or the package declares POSIX. It
+currently does neither.
 
 **No egress control.** Nothing asks where a result is allowed to go, which is the
 control that matters for tools that send mail or post to channels.
@@ -585,3 +617,50 @@ implementation of them.
 | approval does not travel to another call | `TestApproval::test_an_approval_does_not_travel_to_another_call` |
 | a denied or invented approval denies | `TestApproval::test_a_denied_approval_denies`, `…invented_approval_id…` |
 | async tools take the same path | `test_async_tools_go_through_the_same_gate` |
+
+---
+
+## 10. Direction
+
+**Not normative. Nothing in this section is implemented**, and code that
+disagrees with it is not a bug. It is here so a reader can tell a missing feature
+from an undecided one: §8 is what is weak, this is what is next.
+
+**Shadow mode, and a policy written from traffic.** Decisions recorded without
+being enforced, so obstat can be installed in front of a live server for a week
+before it denies anything — then `obstat suggest` reads the log back and emits
+candidate rules. Policy authoring is the barrier to adoption, and an empty file
+is not a starting point.
+
+**Counterfactual replay.** `obstat check --policy new.toml --against
+decisions.jsonl`: run decisions already recorded through a proposed policy and
+print only what changes. Answers "I tightened a rule, what breaks" from real
+traffic rather than from imagination, and needs nothing that §2 and §6 do not
+already provide.
+
+**An evidence pack.** One command producing what a controls walkthrough asks
+for over a period: every call that required an approval, who decided it and
+when, every denial, and the result of §6.3 across the same range. The log is
+already the input; what is missing is the deliverable.
+
+**An anchored head.** §8. Counter-signing the chain head somewhere the log's
+owner cannot reach is the difference between tamper-evidence and
+non-repudiation, and it is the only item here that changes what obstat can
+*claim*.
+
+**Result digests.** §6.1 fingerprints the arguments, which proves the call that
+ran is the call that was approved. The same over the return value would say
+something about what came back, and is the groundwork any egress rule needs.
+
+**Break-glass with a retrospective.** The stop file's opposite: one call
+permitted against policy, recorded as an override, and listed as outstanding
+until somebody signs it off. That it is visible matters more than that it is
+rare.
+
+**The record as a format rather than a library.** §6 is language-agnostic. A
+second implementation writing the same lines, verified by the same rules, would
+make this document the product and the Python package one implementation of it.
+
+Also wanted and unremarkable: approval channels beyond the CLI (§8), per-subject
+call budgets as a rule key, and a trace id on the record so it joins traces a
+host already collects.
