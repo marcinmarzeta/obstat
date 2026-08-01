@@ -7,6 +7,7 @@ absent rule is not permission.
 
 from __future__ import annotations
 
+import hashlib
 import tomllib
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -52,13 +53,13 @@ class Decision:
     code: str
     reason: str
     rule: int | None  # index into the file, so a record points at the line that decided
+    policy: str  # digest of the file it indexes into (§6.4)
 
 
-_DENY_UNMATCHED = Decision("deny", NO_RULE_MATCHED, "no rule matched", None)
-
-# (path, mtime, size) -> rules. Editing the policy takes effect on the next call
-# rather than the next restart; a stat() per call is cheaper than the confusion.
-_cache: tuple[tuple[str, float, int], list[Rule]] | None = None
+# (path, mtime, size) -> rules, digest. Editing the policy takes effect on the
+# next call rather than the next restart; a stat() per call is cheaper than the
+# confusion.
+_cache: tuple[tuple[str, float, int], list[Rule], str] | None = None
 
 
 def _parse(raw: dict) -> list[Rule]:
@@ -84,7 +85,13 @@ def _parse(raw: dict) -> list[Rule]:
     return rules
 
 
-def load(path: Path | None = None) -> list[Rule]:
+def _loaded(path: Path | None = None) -> tuple[list[Rule], str]:
+    """The rules, and a digest of the exact bytes they were parsed from.
+
+    The digest is what makes `rule {n}` mean anything later: the index points
+    into a file §2.2 re-reads whenever it changes, so without it an edit
+    silently repoints every record written before it (§6.4).
+    """
     global _cache
     path = path or paths.policy()
     try:
@@ -97,20 +104,29 @@ def load(path: Path | None = None) -> list[Rule]:
 
     key = (str(path), stat.st_mtime, stat.st_size)
     if _cache is not None and _cache[0] == key:
-        return _cache[1]
+        return _cache[1], _cache[2]
 
+    text = path.read_text(encoding="utf-8")
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise PolicyError(f"{path}: {exc}") from exc
 
     rules = _parse(raw)
-    _cache = (key, rules)
-    return rules
+    # Over the file, not over the parsed rules: two files that parse the same are
+    # still two files, and a reader chasing a decision wants the one on disk.
+    digest = "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+    _cache = (key, rules, digest)
+    return rules, digest
+
+
+def load(path: Path | None = None) -> list[Rule]:
+    return _loaded(path)[0]
 
 
 def decide(*, tool: str, subject: str, resource: str, path: Path | None = None) -> Decision:
-    for index, rule in enumerate(load(path)):
+    rules, digest = _loaded(path)
+    for index, rule in enumerate(rules):
         if rule.matches(tool=tool, subject=subject, resource=resource):
-            return Decision(rule.effect, RULE_MATCHED, f"rule {index}", index)
-    return _DENY_UNMATCHED
+            return Decision(rule.effect, RULE_MATCHED, f"rule {index}", index, digest)
+    return Decision("deny", NO_RULE_MATCHED, "no rule matched", None, digest)

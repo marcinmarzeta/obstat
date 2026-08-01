@@ -24,6 +24,11 @@ from typing import Any, Literal
 from . import approval, paths, policy, record
 
 APPROVAL_ARG = "obstat_approval_id"
+# Namespaced, and for the same reason the approval id is: `subject` is an
+# ordinary word a tool may need for itself — an email's subject line was the
+# case that proved it — and a library that takes one silently takes it from
+# every tool that had a use for it.
+SUBJECT_ARG = "obstat_subject"
 
 # Stable codes for the refusals `guard` raises itself (§6.4).
 SUBJECT_SUPPLIED = "subject_supplied"
@@ -145,16 +150,16 @@ def _widened_return(returns: Any) -> Any:
 
 
 def _public_signature(original: inspect.Signature) -> inspect.Signature:
-    """The signature callers see: `subject` removed, `obstat_approval_id` added,
-    and the return widened to admit the approval payload.
+    """The signature callers see: `obstat_subject` removed, `obstat_approval_id`
+    added, and the return widened to admit the approval payload.
 
-    `subject` is injected by obstat, so leaving it in the advertised schema would
-    invite a client to supply its own. The approval id is the opposite — the
-    retry protocol needs the caller to send it, so it has to be advertised. The
-    return is widened for the same reason both of those are true: this signature
-    describes what the wrapper does, not what the body does.
+    The subject is injected by obstat, so leaving it in the advertised schema
+    would invite a client to supply its own. The approval id is the opposite —
+    the retry protocol needs the caller to send it, so it has to be advertised.
+    The return is widened for the same reason both of those are true: this
+    signature describes what the wrapper does, not what the body does.
     """
-    kept = [p for name, p in original.parameters.items() if name != "subject"]
+    kept = [p for name, p in original.parameters.items() if name != SUBJECT_ARG]
     var_keyword = [p for p in kept if p.kind is inspect.Parameter.VAR_KEYWORD]
     positional = [p for p in kept if p.kind is not inspect.Parameter.VAR_KEYWORD]
     approval_param = inspect.Parameter(
@@ -199,43 +204,44 @@ def guard(
     other argument stays a digest and nothing else (§6.1). Name identifiers, not
     payloads — the point is that an approver can tell which issue, which
     document, which recipient, not that the log holds a copy of the message.
+
+    To record what the call *did* rather than what it was allowed to do, call
+    `obstat.note(...)` from inside the body (§6.2). Arguments naming a set say
+    nothing about how big the set turned out to be.
     """
 
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
         name = tool or fn.__name__
         original = inspect.signature(fn)
         params = list(original.parameters.values())
-        wants_subject = "subject" in original.parameters
+        # Until 0.4.0 the caller was injected into a parameter called `subject`.
+        # A tool that still declares one would now be handed nothing at all, and
+        # would carry on with `None` as though nobody were calling — so it is
+        # refused here rather than discovered from a record that says `anonymous`
+        # about a caller obstat knew.
+        legacy = original.parameters.get("subject")
+        if legacy is not None and "Subject" in str(legacy.annotation):
+            raise TypeError(
+                f"{name}: the caller is injected into `{SUBJECT_ARG}` since 0.4.0, not "
+                "`subject`. Rename the parameter — left as it is, it would receive None "
+                "on every call."
+            )
+        wants_subject = SUBJECT_ARG in original.parameters
         if wants_subject:
-            # A tool with its own `subject` — an email's subject line being the
-            # obvious one — otherwise loses that parameter without a word: it is
-            # stripped from the advertised signature (§4.2), so no caller can set
-            # it, and a `Subject` arrives in its place. The annotation is the only
-            # statement of intent available, so an unannotated `subject` is left
-            # alone rather than guessed at. A `Subject` imported under another name
-            # reads as a collision here; renaming the parameter is the fix either
-            # way, and the alternative is trusting a name that means two things.
-            declared = original.parameters["subject"].annotation
-            if declared is not inspect.Parameter.empty and "Subject" not in str(declared):
-                raise TypeError(
-                    f"{name}: `subject` is where obstat injects the caller's identity, "
-                    f"so it cannot also be {declared!r}. Rename yours — `subject_line` "
-                    "— or annotate it `Subject | None` to receive the caller."
-                )
-            # `subject` is injected by keyword while positional arguments pass
-            # through unchanged, so a parameter fillable by position after it would
+            # Injected by keyword while positional arguments pass through
+            # unchanged, so a parameter fillable by position after it would
             # receive the caller's value for something else (§4.1). Raised at
             # decoration rather than at call time, where the `allow` record is
             # already on disk and the failure reads as a call that broke after
             # being authorised.
-            after = params[[p.name for p in params].index("subject") + 1 :]
+            after = params[[p.name for p in params].index(SUBJECT_ARG) + 1 :]
             by_keyword = (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.VAR_KEYWORD)
-            if original.parameters["subject"].kind is inspect.Parameter.POSITIONAL_ONLY or any(
+            if original.parameters[SUBJECT_ARG].kind is inspect.Parameter.POSITIONAL_ONLY or any(
                 p.kind not in by_keyword for p in after
             ):
                 raise TypeError(
-                    f"{name}: obstat injects `subject` by keyword, so it must come last "
-                    "or be keyword-only (`*, subject: Subject | None = None`)"
+                    f"{name}: obstat injects `{SUBJECT_ARG}` by keyword, so it must come "
+                    f"last or be keyword-only (`*, {SUBJECT_ARG}: Subject | None = None`)"
                 )
         public = _public_signature(original)
         # Arguments are bound against the public signature minus the approval id,
@@ -260,6 +266,7 @@ def guard(
             resource_id: str | None = None,
             args_digest: str | None = None,
             rule: int | None = None,
+            policy_digest: str | None = None,
             approval_id: str | None = None,
             extra: dict[str, Any] | None = None,
         ) -> Denied:
@@ -273,6 +280,7 @@ def guard(
                     reason=reason,
                     rule=rule,
                     args_digest=args_digest or record.digest({}),
+                    policy_digest=policy_digest,
                     approval_id=approval_id,
                     extra=extra,
                 )
@@ -282,10 +290,11 @@ def guard(
             """Steps 1-5. Raises Denied, raises _Pending, or returns."""
             approval_id = kwargs.pop(APPROVAL_ARG, None)
 
-            # 1. `subject` is not advertised, so its presence is a caller trying to
-            #    say who it is. Denied before anything reads it — including the
-            #    record, which would otherwise quote an attacker's string.
-            if "subject" in kwargs:
+            # 1. `obstat_subject` is not advertised, so its presence is a caller
+            #    trying to say who it is. Denied before anything reads it —
+            #    including the record, which would otherwise quote an attacker's
+            #    string. A plain `subject` is now the tool's own business.
+            if SUBJECT_ARG in kwargs:
                 raise refuse(SUBJECT_SUPPLIED, "caller supplied a subject")
 
             try:
@@ -336,6 +345,7 @@ def guard(
                 subject=subject,
                 resource_id=target,
                 args_digest=args_digest,
+                policy_digest=verdict.policy,
                 extra=recorded,
             )
             if verdict.effect == "deny":
@@ -375,6 +385,7 @@ def guard(
                         reason=verdict.reason,
                         rule=verdict.rule,
                         args_digest=args_digest,
+                        policy_digest=verdict.policy,
                         approval_id=wanted,
                         # The approver reads these off this record (§5.1): the
                         # approvals table holds a digest, and a human cannot
@@ -414,11 +425,12 @@ def guard(
                 reason=checked.verdict.reason,
                 rule=checked.verdict.rule,
                 args_digest=checked.args_digest,
+                policy_digest=checked.verdict.policy,
                 approval_id=checked.approval_id,
                 extra=extra,
             )
             if wants_subject:
-                kwargs = {**kwargs, "subject": checked.subject}
+                kwargs = {**kwargs, SUBJECT_ARG: checked.subject}
             return record_id, kwargs
 
         if inspect.iscoroutinefunction(fn):
@@ -429,16 +441,21 @@ def guard(
                     record_id, kwargs = authorise(args, dict(kwargs))
                 except _Pending as pending:
                     return pending.payload()
-                try:
-                    result = await fn(*args, **kwargs)
-                except Exception as exc:
-                    # `__qualname__`, because a nested exception class has a
-                    # `__name__` that identifies nothing: `imaplib.IMAP4.error`
-                    # records as "error". Same leak-nothing property, one more
-                    # dotted component.
-                    record.outcome(record_id, ok=False, error=type(exc).__qualname__)
-                    raise
-                record.outcome(record_id, ok=True)
+                with record.noting() as noted:
+                    try:
+                        result = await fn(*args, **kwargs)
+                    except Exception as exc:
+                        # `__qualname__`, because a nested exception class has a
+                        # `__name__` that identifies nothing: `imaplib.IMAP4.error`
+                        # records as "error". Same leak-nothing property, one more
+                        # dotted component.
+                        record.outcome(
+                            record_id, ok=False, error=type(exc).__qualname__, noted=noted
+                        )
+                        raise
+                    # A body that failed half way still noted what it managed to
+                    # do, and that half is the part a reader needs most.
+                    record.outcome(record_id, ok=True, noted=noted)
                 return result
 
         else:
@@ -449,16 +466,15 @@ def guard(
                     record_id, kwargs = authorise(args, dict(kwargs))
                 except _Pending as pending:
                     return pending.payload()
-                try:
-                    result = fn(*args, **kwargs)
-                except Exception as exc:
-                    # `__qualname__`, because a nested exception class has a
-                    # `__name__` that identifies nothing: `imaplib.IMAP4.error`
-                    # records as "error". Same leak-nothing property, one more
-                    # dotted component.
-                    record.outcome(record_id, ok=False, error=type(exc).__qualname__)
-                    raise
-                record.outcome(record_id, ok=True)
+                with record.noting() as noted:
+                    try:
+                        result = fn(*args, **kwargs)
+                    except Exception as exc:
+                        record.outcome(
+                            record_id, ok=False, error=type(exc).__qualname__, noted=noted
+                        )
+                        raise
+                    record.outcome(record_id, ok=True, noted=noted)
                 return result
 
         wrapper.__signature__ = public  # type: ignore[attr-defined]

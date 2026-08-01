@@ -32,14 +32,15 @@ def read_document(doc_id: str) -> str:
 
 @mcp.tool()
 @guard(resource="doc:{doc_id}")
-def delete_document(doc_id: str, *, subject: Subject | None = None) -> str:
+def delete_document(doc_id: str, *, obstat_subject: Subject | None = None) -> str:
     """Delete a document. Policy sends this one to a human first.
 
-    Declaring `subject` is optional — obstat injects it when the parameter is
-    there, and strips it from what clients see either way. Keyword-only because
-    obstat injects it by keyword; last in the signature would do as well.
+    Declaring `obstat_subject` is optional — obstat injects it when the parameter
+    is there, and strips it from what clients see either way. Keyword-only because
+    obstat injects it by keyword; last in the signature would do as well. The name
+    is namespaced so that `subject` stays yours to use for anything.
     """
-    return f"{doc_id} deleted by {subject}"
+    return f"{doc_id} deleted by {obstat_subject}"
 
 
 if __name__ == "__main__":

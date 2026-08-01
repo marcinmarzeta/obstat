@@ -58,8 +58,8 @@ in your resolver by returning `None` instead of an unverified `Subject`.
 
 ### 1.2 A caller may not name itself
 
-`subject` is removed from the wrapped function's advertised signature (§4.2), so
-a client cannot supply one. If one arrives anyway the call is denied at step 1,
+`obstat_subject` is removed from the wrapped function's advertised signature
+(§4.2), so a client cannot supply one. If one arrives anyway the call is denied at step 1,
 before anything reads the value — including the record, which would otherwise
 quote an attacker's string back into the audit trail.
 
@@ -159,7 +159,7 @@ Normative. Each step's failure is terminal.
 
 | # | Step | Code (§6.4) | Prose reason |
 |---|---|---|---|
-| 1 | Reject a caller-supplied `subject` argument | `subject_supplied` | `caller supplied a subject` |
+| 1 | Reject a caller-supplied `obstat_subject` argument | `subject_supplied` | `caller supplied a subject` |
 | 1b | Bind arguments to the tool's signature | `arguments_rejected` | `arguments do not fit the tool: …` |
 | 2 | Stop file present (§3.4) | `halted` | `halted` |
 | 3 | Resolve the resource id from the arguments | `resource_unresolved` | `resource template did not resolve: …` |
@@ -182,8 +182,8 @@ complete" — a state an examiner can act on. The reverse ordering produces
 audit.
 
 Step 2 precedes policy so that stopping never depends on the policy file still
-being parseable. Step 1 precedes argument binding so that a forged `subject`
-cannot reach the record even as a rejected value.
+being parseable. Step 1 precedes argument binding so that a forged
+`obstat_subject` cannot reach the record even as a rejected value.
 
 Denials at every step write a record before raising. A denial nobody can read is
 half a control.
@@ -274,45 +274,47 @@ to prevent — so this is a known weakness, listed in §8, not a settled design.
 
 ## 4. What callers see
 
-### 4.1 Injected `subject`
+### 4.1 Injected `obstat_subject`
 
-Declare a `subject` parameter and obstat passes the resolved `Subject` (or
-`None`). Omit it and nothing is injected. Either way the parameter is stripped
-from the advertised signature.
+Declare an `obstat_subject` parameter and obstat passes the resolved `Subject`
+(or `None`). Omit it and nothing is injected. Either way the parameter is
+stripped from the advertised signature.
 
 It must be **keyword-only, or the last parameter**:
 
 ```python
-def delete_document(doc_id: str, *, subject: Subject | None = None) -> str: ...
+def delete_document(doc_id: str, *, obstat_subject: Subject | None = None) -> str: ...
 ```
 
 obstat injects it by keyword and passes the caller's positional arguments
-through unchanged, against a signature that no longer contains `subject` — so
-any parameter fillable by position *after* `subject` would receive the caller's
-value for something else. `@guard` raises `TypeError` at decoration rather than
-at call time, because at call time the `allow` record is already on disk and the
-failure reads as a call that was authorised and then broke.
+through unchanged, against a signature that no longer contains it — so any
+parameter fillable by position *after* it would receive the caller's value for
+something else. `@guard` raises `TypeError` at decoration rather than at call
+time, because at call time the `allow` record is already on disk and the failure
+reads as a call that was authorised and then broke.
 
-The name is reserved, and a tool that means something else by it is also refused
-at decoration:
+**`obstat_` is the only prefix obstat reserves.** Every other parameter name,
+`subject` included, belongs to the tool and is advertised, bound and digested
+like any other. Until 0.4.0 the injected parameter was called `subject`, which
+took an ordinary word out of every tool's vocabulary; an email tool wanting a
+subject line was not an edge case, and it lost the parameter without a word —
+stripped from the advertised signature, so no caller could set it, and a
+`Subject` arriving in its place.
+
+A tool still declaring the old spelling is refused at decoration:
 
 ```python
-def send_email(to: str, *, subject: str) -> str: ...  # TypeError
+def delete_document(doc_id: str, *, subject: Subject | None = None) -> str: ...  # TypeError
 ```
 
-An email's subject line is the case this was written for. Without the check the
-parameter is stripped from the advertised signature like any other `subject`, so
-no caller can ever set it and a `Subject` arrives in its place — silently, and
-visible only in the mail that goes out. The annotation decides: anything naming
-`Subject` receives the caller, an unannotated `subject` is left alone rather than
-guessed at, and anything else is the collision.
-
-Reserving a bare word is the flaw underneath this — `obstat_approval_id` is
-namespaced for exactly this reason and `subject` is not. §10 has the rename.
+Only when the annotation names `Subject`, which is the case that would otherwise
+receive `None` on every call for ever and record `anonymous` about a caller
+obstat had resolved. A `subject: str` is the tool's own and passes.
 
 ### 4.2 The advertised signature
 
-The wrapper's `__signature__` is the wrapped function's, minus `subject`, plus:
+The wrapper's `__signature__` is the wrapped function's, minus `obstat_subject`,
+plus:
 
 ```python
 obstat_approval_id: str | None = None  # keyword-only
@@ -327,7 +329,8 @@ protocol error — the exact outcome §5.1 returns rather than raises to avoid. 
 undeclared return is left undeclared; there is nothing to validate against.
 
 MCP servers generate their tool schema from that signature, so a client sees the
-approval argument — it needs to, for §5.2 — and cannot see `subject`. Verified
+approval argument — it needs to, for §5.2 — and cannot see `obstat_subject`.
+Verified
 against the MCP SDK by calling through it, not by reading the signature:
 `delete_document` advertises `['doc_id', 'obstat_approval_id']`, an allowed call
 returns its result, and an approval-required call returns the §5.1 payload with
@@ -479,7 +482,7 @@ fragment, so one failed write costs one record instead of two — `obstat verify
 reports the fragment and everything after it still reads.
 
 ```json
-{"schema": 4,
+{"schema": 5,
  "id": "6430f1a38f8e470a898ca9a116dfb4cc",
  "ts": 1785545412.241792,
  "phase": "decision",
@@ -491,6 +494,7 @@ reports the fragment and everything after it still reads.
  "reason": "rule 1",
  "rule": 1,
  "args": "sha256:ae32e699…",
+ "policy": "sha256:7c1d05af…",
  "approval_id": "d41b88f29a43",
  "subject_verified": false,
  "prev": "sha256:1f0c4b7d…",
@@ -498,13 +502,15 @@ reports the fragment and everything after it still reads.
 ```
 
 `effect` is one of `allow`, `deny`, `approval_required`. `rule` is the index into
-the policy file, so a record points at the line that decided it. `prev` and
-`hash` are the chain (§6.3).
+the policy file, so a record points at the line that decided it, and `policy`
+identifies *which* file that index is into (§6.4). `prev` and `hash` are the
+chain (§6.3).
 
 Schema 2 added `prev` and `hash`; schema 3 added `code`; schema 4 added
-`args_recorded` (§6.1). Records written at schema 1 have no chain fields and
-verify as *unverifiable* rather than as damaged — a log that predates the chain is
-not evidence of tampering.
+`args_recorded` (§6.1); schema 5 added `policy` and, on outcome records, `noted`
+(§6.2). Records written at schema 1 have no chain fields and verify as
+*unverifiable* rather than as damaged — a log that predates the chain is not
+evidence of tampering.
 
 `via` (§1) is present on an `allow` record only when the subject carries a
 delegation chain: `"via": ["human:ana"]`. It is omitted rather than written empty,
@@ -555,8 +561,8 @@ which document, which recipient — not that the log holds a copy of the message
 ### 6.2 Outcome records
 
 ```json
-{"schema": 4, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
- "prev": "…", "hash": "…"}
+{"schema": 5, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
+ "noted": {"deleted": 154, "matched": 158}, "prev": "…", "hash": "…"}
 ```
 
 `error` is the exception class's qualified name, never its message — messages
@@ -573,6 +579,38 @@ twice for half the value.
 Outcome records are in the chain even though they are not durable. `ok` and
 `error` are worth as much to a reader as the decision itself, and a record left
 out of the chain is a record anyone may rewrite freely.
+
+#### `noted` — what the call did
+
+The arguments (§6.1) say what a call was *authorised* to do. Where they name one
+thing that is the same statement — for `delete_message(uid=…)` the argument **is**
+the effect. Where they name a **set**, it is not: a `delete_by_sender` records one
+sender whether it removed one message or ten thousand, and without this field the
+number reaches nobody.
+
+A tool says so itself, from inside its own body:
+
+```python
+@guard(record_args=("sender",))
+def delete_by_sender(sender: str, folder: str = "INBOX") -> str:
+    ...
+    obstat.note(deleted=len(exact), matched=len(found))
+```
+
+Normative:
+
+- The tool names the fields; obstat infers nothing and records no return value.
+  Returns carry the same free text and personal data §6.1 keeps out of the log.
+- Written on failure too. A body that raised half way through still noted what it
+  managed to do, and that half is the part a reader needs most.
+- Omitted when nothing was noted, on the §6 grounds `via` is.
+- `note()` outside a guarded call does nothing. A tool body has to stay callable
+  without obstat — including in the tests its author writes for it — and an
+  informational field is not worth charging that for.
+
+It is on the outcome record, so it inherits every limit of one: not durable, and
+absent entirely if the process died mid-call. What the call was *allowed* to do
+is the durable half, and that ordering is the point of the whole library.
 
 ### 6.3 The chain
 
@@ -646,6 +684,32 @@ is what obstat did until schema 3, in the one place it mattered most (§5.3).
 Prose still carries detail no code should: which binding failed, which exception a
 resource template raised. Assert on the code; read the reason.
 
+#### `rule` needs `policy` beside it
+
+`rule` is an index into a file §2.2 re-reads whenever it changes. On its own it
+is a pointer whose target moves: delete a rule from the top and every record
+written before that edit points one line off, with nothing in the log to say the
+numbering shifted. The same tool and resource can read `rule 2` on Monday and
+`rule 0` on Tuesday, both correct when written and neither resolvable after.
+
+So every decision that consulted policy carries `policy`, a `sha256:` over the
+**bytes of the file**, not over the parsed rules — two files that parse alike are
+still two files, and a reader chasing a decision wants the one that was on disk.
+It costs nothing: §2.2 already reads and stats that file.
+
+This makes the ordinary governance cycle legible. A denial, a policy edit, then an
+approval of the same call is what a working control looks like; with `policy` on
+each record a reader can see that the file changed between them, and that the two
+decisions were made under different rules — including when the new rule granted
+more than the denial had been about.
+
+What it does not do is say *what* changed, or who changed it. The log identifies
+the policy; keeping the policies themselves is version control's job.
+
+Omitted where policy never ran — a halt (§3.4) or an unresolved resource denies
+before §2 is consulted, and a digest there would claim a file had a say in
+something it did not.
+
 ---
 
 ## 7. Configuration
@@ -698,30 +762,6 @@ gave one, opened a raw IMAP connection, and answered correctly — leaving the t
 mailboxes' 2,360 unread messages entirely outside the log. Nothing failed. The
 gate simply was not on that path. Guarding a tool per question people actually
 ask does more for the record than any enforcement obstat could add.
-
-**The record says what was authorised, never what it did.** §6.2 carries `ok` and
-`error`; the return value goes nowhere, and `record_args` (§6.1) covers inputs
-only. Where a tool's arguments name one thing this costs nothing — for
-`delete_message(uid=…)` the input *is* the effect. The moment they describe a
-**set**, the record stops describing the action: a `delete_by_sender` authorised
-against one sender is one record whether it removed one message or ten thousand,
-and the number reaches no one. Observed on a mailbox, where the outcome for a
-bulk delete of 154 messages was the word `true`. The fix is not the result digest
-of §10 — a digest proves what came back, and what is missing is what the call
-touched. It is a way for a tool to contribute fields to its own outcome record,
-under the same rule as `record_args`: the tool names them, obstat does not guess.
-
-**A decision cannot be tied to the policy that produced it.** §6.4 records
-`rule {n}`, an index into a file §2.2 re-reads whenever it changes. Edit the
-policy and every earlier record's reason points somewhere else — the same tool
-and resource recorded `rule 2` before an edit and `rule 0` after, with nothing to
-say the numbering moved. A denial followed by a policy change followed by an
-approval is the ordinary governance cycle, and it is exactly the sequence the log
-cannot reconstruct: the widening is invisible, and so is the fact that a rule
-granted more than the denial had asked about. The fix is cheap — a digest of the
-policy file on every decision record. §2.2 already stats that file on every call,
-so nothing new is read, and "were these two decisions made under the same policy"
-becomes answerable without keeping the file's history.
 
 **A resource id is caller-controlled text and nothing normalises it.** §3.3. A
 policy written against `jira_issue:SEC-*` says nothing about `sec-1`, and the
@@ -797,7 +837,9 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | nothing matching denies | `test_no_rule_is_a_deny` |
 | a missing policy is not an implicit allow | `test_missing_policy_is_not_an_implicit_allow` |
 | a caller cannot name itself | `test_a_caller_cannot_supply_its_own_subject` |
-| a colliding `subject` parameter is refused at decoration | `test_a_subject_that_would_collide_is_refused_at_decoration` |
+| a colliding injected parameter is refused at decoration | `test_a_subject_that_would_collide_is_refused_at_decoration` |
+| a tool may call its own parameter `subject` | `test_a_tool_may_call_its_own_parameter_subject` |
+| the pre-0.4.0 `subject` spelling is refused | `test_a_tool_still_declaring_the_old_subject_is_refused` |
 | a delegation chain reaches the record | `test_a_delegation_chain_reaches_the_record` |
 | the approval window is configurable, and a useless one raises | `test_the_approval_window_is_configurable` |
 | an edited record is caught | `TestChain::test_an_edited_record_is_caught` |
@@ -807,7 +849,10 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | concurrent processes interleave records without splitting one (POSIX) | `TestConcurrency::test_two_processes_write_one_log` |
 | within one process the chain stays a line | `TestConcurrency::test_threads_do_not_split_a_record` |
 | a forked chain verifies | `TestConcurrency::test_a_forked_chain_still_verifies` |
-| `subject` unadvertised, approval id advertised | `test_injected_subject_is_not_advertised…` |
+| `obstat_subject` unadvertised, approval id advertised | `test_injected_subject_is_not_advertised…` |
+| a tool records what it did, on success and on failure | `test_a_tool_can_say_what_it_did` · `test_what_a_failing_body_managed_to_do_is_still_recorded` |
+| `note()` outside a guarded call is a no-op | `test_note_outside_a_guarded_call_does_nothing` |
+| a decision identifies the policy that produced it | `test_the_policy_that_decided_is_identified` |
 | an approval is a return value through a real MCP server | `test_an_approval_survives_a_real_mcp_server` |
 | the resource comes from the arguments | `test_resource_comes_from_the_arguments` |
 | a template matches only the spelling it was given | `test_a_template_matches_only_the_spelling_it_was_given` |
@@ -868,13 +913,6 @@ something about what came back, and is the groundwork any egress rule needs.
 permitted against policy, recorded as an override, and listed as outstanding
 until somebody signs it off. That it is visible matters more than that it is
 rare.
-
-**`obstat_subject`, and an end to the reserved word.** §4.1 takes the bare name
-`subject` from the tool's own vocabulary, in a library whose other injected
-parameter is called `obstat_approval_id` precisely so it collides with nothing.
-An email tool wanting a subject line is not an edge case. The check that refuses
-the collision is a guard rail on a naming mistake, not a fix for it; the fix is
-the namespaced name, and it breaks every tool that declares `subject` today.
 
 **The record as a format rather than a library.** §6 is language-agnostic. A
 second implementation writing the same lines, verified by the same rules, would

@@ -179,7 +179,7 @@ has the whole story, including why obstat does not fold case for you.
 ## The order
 
 ```
-1  reject a caller-supplied subject
+1  reject a caller-supplied obstat_subject
 2  stop file
 3  resolve the resource from the arguments
 4  policy
@@ -189,9 +189,10 @@ has the whole story, including why obstat does not fold case for you.
 8  write the outcome — best effort
 ```
 
-Step 1 exists because `subject` is stripped from the tool's advertised signature.
-A client that sends one anyway is trying to name itself, and that is a denial
-before anything reads the value.
+Step 1 exists because `obstat_subject` is stripped from the tool's advertised
+signature. A client that sends one anyway is trying to name itself, and that is a
+denial before anything reads the value. `obstat_` is the only prefix reserved —
+every other parameter name, `subject` included, stays the tool's own.
 
 Step 8 is deliberately not durable. If the process dies between 7 and 8 the record
 reads "authorised, outcome unknown", which is the honest state; paying for a second
@@ -238,6 +239,24 @@ d41b88f29a43  send_email  human:ana  tool:send_email  871s left
 — because an approver deciding about `sha256:ae32e6…` is deciding about nothing.
 The digest still covers every argument; `body` is in it and nowhere else. Name
 identifiers, not payloads.
+
+Arguments say what a call was *allowed* to do. Where they name a set rather than
+one thing, only the body knows what it then touched — so the body says:
+
+```python
+@guard(record_args=("sender",))
+def delete_by_sender(sender: str) -> str:
+    ...
+    obstat.note(deleted=len(gone), matched=len(found))
+```
+
+```json
+{"phase": "outcome", "ok": true, "noted": {"deleted": 154, "matched": 158}}
+```
+
+Written on failure too, since half a bulk delete is the case a reader most needs
+a number for. Outside a guarded call `note()` does nothing, so a tool body stays
+callable without obstat.
 
 ## What is not here yet
 

@@ -20,12 +20,49 @@ import threading
 import time
 import uuid
 from collections import deque
+from collections.abc import Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
 from . import paths
 
-SCHEMA = 4
+SCHEMA = 5
+
+# What the running tool body has asked to have recorded about what it did (§6.2).
+# A ContextVar rather than a thread local, so an async tool nested inside another
+# writes to its own record and not to its caller's.
+_noted: ContextVar[dict[str, Any] | None] = ContextVar("obstat_noted", default=None)
+
+
+def note(**fields: Any) -> None:
+    """Add fields to the outcome record of the call running now (§6.2).
+
+        obstat.note(deleted=len(uids))
+
+    The arguments say what a call was *authorised* to do; where they name a set
+    rather than one thing, only the tool knows what it then touched. Same rule as
+    `record_args`: the tool names the fields, obstat guesses nothing.
+
+    Outside a guarded call this does nothing. Raising instead would mean a tool
+    body that cannot be run without obstat — including in its author's own tests
+    — which is too much to charge for an informational field.
+    """
+    current = _noted.get()
+    if current is not None:
+        current.update(fields)
+
+
+@contextlib.contextmanager
+def noting() -> Iterator[dict[str, Any]]:
+    """Collect `note()` calls made while the body runs."""
+    fields: dict[str, Any] = {}
+    token = _noted.set(fields)
+    try:
+        yield fields
+    finally:
+        _noted.reset(token)
+
 
 # (log path, hash of the last record this process wrote). Re-read when the path
 # changes, the way policy re-reads its file.
@@ -161,6 +198,7 @@ def decision(
     reason: str,
     rule: int | None,
     args_digest: str,
+    policy_digest: str | None = None,
     approval_id: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> str:
@@ -186,6 +224,10 @@ def decision(
             "rule": rule,
             "args": args_digest,
             "approval_id": approval_id,
+            # Omitted where policy was never consulted — a halt or an unresolved
+            # resource denies before §2 runs, and a digest there would claim a
+            # file had a say in something it did not.
+            **({"policy": policy_digest} if policy_digest else {}),
             **(extra or {}),
         },
         durable=True,
@@ -193,13 +235,18 @@ def decision(
     return record_id
 
 
-def outcome(record_id: str, *, ok: bool, error: str | None = None) -> None:
+def outcome(
+    record_id: str, *, ok: bool, error: str | None = None, noted: dict[str, Any] | None = None
+) -> None:
     """Best effort, and deliberately not durable.
 
     If the process dies mid-call the decision record still stands alone, which
     reads as "authorised, outcome unknown" — the honest state. Blocking the
     caller on a second fsync to record something that is only informative would
     be paying the cost twice for half the value.
+
+    `noted` is whatever the body passed to `note()`, and is the only thing in the
+    log describing what the call *did* rather than what it was allowed to do.
     """
     # A full disk must not turn a completed call into a failed one.
     with contextlib.suppress(OSError):
@@ -211,6 +258,7 @@ def outcome(record_id: str, *, ok: bool, error: str | None = None) -> None:
                 "phase": "outcome",
                 "ok": ok,
                 "error": error,
+                **({"noted": noted} if noted else {}),
             },
             durable=False,
         )

@@ -17,6 +17,7 @@ import time
 
 import pytest
 
+import obstat
 from obstat import Denied, Subject, guard, policy, record, set_subject_resolver
 from obstat import approval as approval_module
 
@@ -57,6 +58,66 @@ def test_outcome_is_recorded_after(workspace):
     assert [e["phase"] for e in entries] == ["decision", "outcome"]
     assert entries[1]["ok"] is True
     assert entries[1]["id"] == entries[0]["id"]
+    assert "noted" not in entries[1]  # omitted rather than empty
+
+
+def test_a_tool_can_say_what_it_did(workspace):
+    """The arguments say what was authorised. Where they name a set, only the
+    body knows how big the set turned out to be (§6.2)."""
+    workspace(ALLOW_ALL)
+
+    @guard(record_args=("sender",))
+    def delete_by_sender(sender: str) -> str:
+        obstat.note(deleted=154, matched=158)
+        return "done"
+
+    delete_by_sender("noreply@example.com")
+    decision, outcome = record.read()
+    assert decision["args_recorded"] == {"sender": "noreply@example.com"}
+    assert outcome["noted"] == {"deleted": 154, "matched": 158}
+
+
+def test_what_a_failing_body_managed_to_do_is_still_recorded(workspace):
+    """Half a bulk delete is the case a reader most needs the number for."""
+    workspace(ALLOW_ALL)
+
+    @guard()
+    def half() -> str:
+        obstat.note(deleted=12)
+        raise RuntimeError("connection lost")
+
+    with pytest.raises(RuntimeError):
+        half()
+    outcome = record.read()[1]
+    assert outcome["ok"] is False
+    assert outcome["noted"] == {"deleted": 12}
+
+
+def test_note_outside_a_guarded_call_does_nothing(workspace):
+    """A tool body has to stay callable without obstat — including in the tests
+    its author writes for it."""
+    obstat.note(deleted=1)  # must not raise
+
+
+def test_the_policy_that_decided_is_identified(workspace):
+    """`rule {n}` indexes a file that §2.2 re-reads whenever it changes, so
+    without this an edit silently repoints every record written before it."""
+    workspace(ALLOW_ALL)
+
+    @guard()
+    def touch() -> str:
+        return "ok"
+
+    touch()
+    first = record.read()[0]
+    assert first["policy"].startswith("sha256:")
+
+    # Same decision, different file: the reason is `rule 0` both times.
+    workspace('[[rule]]\ntool = "*"\neffect = "allow"\n')
+    touch()
+    second = [e for e in record.read() if e["phase"] == "decision"][-1]
+    assert second["reason"] == first["reason"] == "rule 0"
+    assert second["policy"] != first["policy"]
 
 
 class Client:
@@ -123,59 +184,65 @@ def test_a_caller_cannot_supply_its_own_subject(workspace):
     set_subject_resolver(lambda: Subject(id="ana", kind="human", verified=True))
 
     @guard()
-    def whoami(subject: Subject | None = None) -> str:
-        return str(subject)
+    def whoami(obstat_subject: Subject | None = None) -> str:
+        return str(obstat_subject)
 
     assert whoami() == "human:ana"
 
     with pytest.raises(Denied):
-        whoami(subject=Subject(id="root", kind="human", verified=True))
+        whoami(obstat_subject=Subject(id="root", kind="human", verified=True))
 
     assert record.read()[-1]["code"] == SUBJECT_SUPPLIED
 
 
 def test_a_subject_that_would_collide_is_refused_at_decoration():
-    # A `doc_id` after `subject` would be filled from the caller's first positional
-    # argument, because the advertised signature no longer has `subject` in it.
+    # A `doc_id` after the injected parameter would be filled from the caller's
+    # first positional argument, because the advertised signature no longer has
+    # that parameter in it.
     with pytest.raises(TypeError, match="keyword"):
 
         @guard()
-        def wrong(subject: Subject | None, doc_id: str) -> str:  # pragma: no cover
+        def wrong(obstat_subject: Subject | None, doc_id: str) -> str:  # pragma: no cover
             raise AssertionError("decorating this should have failed")
 
     # Last, or keyword-only: nothing positional follows, so neither can collide.
     @guard()
-    def trailing(doc_id: str, subject: Subject | None = None) -> str:  # pragma: no cover
+    def trailing(doc_id: str, obstat_subject: Subject | None = None) -> str:  # pragma: no cover
         return doc_id
 
     @guard()
-    def keyword_only(doc_id: str, *, subject: Subject | None = None) -> str:  # pragma: no cover
+    def keyword_only(  # pragma: no cover
+        doc_id: str, *, obstat_subject: Subject | None = None
+    ) -> str:
         return doc_id
 
 
-def test_a_subject_that_means_something_else_is_refused_at_decoration():
-    """An email's subject line, which is where this came from: it is stripped
-    from the advertised signature like any other `subject`, so without the check
-    no caller can set it and a `Subject` goes out in the header instead."""
-    with pytest.raises(TypeError, match="Rename yours"):
+def test_a_tool_may_call_its_own_parameter_subject(workspace):
+    """The collision 0.4.0 removed. An email's subject line was the case that
+    proved a bare `subject` was the wrong name to reserve — it is the tool's own
+    now, advertised, bound and digested like any other argument."""
+    workspace(ALLOW_ALL)
+    sent = {}
+
+    @guard(record_args=("subject",))
+    def send_email(to: str, subject: str, body: str) -> str:
+        sent.update(to=to, subject=subject)
+        return "sent"
+
+    assert "subject" in inspect.signature(send_email).parameters
+    assert send_email("ana@example.com", "Q3", "...") == "sent"
+    assert sent["subject"] == "Q3"
+    assert record.read()[0]["args_recorded"] == {"subject": "Q3"}
+
+
+def test_a_tool_still_declaring_the_old_subject_is_refused(workspace):
+    """The migration. Left alone it would silently receive None for ever, and the
+    record would say `anonymous` about a caller obstat had resolved."""
+    with pytest.raises(TypeError, match="obstat_subject"):
 
         @guard()
-        def send_email(to: str, *, subject: str) -> str:  # pragma: no cover
+        def stale(doc_id: str, *, subject: Subject | None = None) -> str:  # pragma: no cover
             raise AssertionError("decorating this should have failed")
-
-    # Fires before the ordering check, so the message names the real problem
-    # rather than advising a move that would make the theft silent.
-    with pytest.raises(TypeError, match="Rename yours"):
-
-        @guard()
-        def positional(to: str, subject: str, body: str) -> str:  # pragma: no cover
-            raise AssertionError("decorating this should have failed")
-
-    # Unannotated is left alone: there is nothing to read intent from, and
-    # refusing would break tools that have declared it that way all along.
-    @guard()
-    def unannotated(doc_id: str, *, subject=None) -> str:  # pragma: no cover
-        return doc_id
 
 
 def test_a_delegation_chain_reaches_the_record(workspace):
@@ -199,11 +266,11 @@ def test_injected_subject_is_not_advertised_but_the_approval_id_is(workspace):
     workspace(ALLOW_ALL)
 
     @guard()
-    def tool(issue: str, subject: Subject | None = None) -> str:  # pragma: no cover
+    def tool(issue: str, obstat_subject: Subject | None = None) -> str:  # pragma: no cover
         return issue
 
     params = inspect.signature(tool).parameters
-    assert "subject" not in params
+    assert "obstat_subject" not in params
     assert params["obstat_approval_id"].default is None
 
 
