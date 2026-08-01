@@ -21,6 +21,9 @@ pip install obstat
 No dependencies. Not AWS, not an identity provider, not a policy service — the
 decorator, `tomllib`, `sqlite3` and a file.
 
+[`docs/obstat-spec.md`](docs/obstat-spec.md) is normative, and its §8 lists what
+is still weak.
+
 ## 60 seconds
 
 `obstat.toml`:
