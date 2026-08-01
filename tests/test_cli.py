@@ -7,7 +7,7 @@ answer.
 
 from __future__ import annotations
 
-from obstat import policy
+from obstat import guard, policy
 from obstat.__main__ import main
 
 
@@ -47,6 +47,23 @@ def test_check_names_the_rule_that_decided(workspace, capsys):
 
     assert main(["check", "write_thing", "doc:other"]) == 1
     assert capsys.readouterr().out.startswith("deny (no rule matched)")
+
+
+def test_pending_shows_what_is_being_approved(workspace, capsys):
+    """An approver deciding about a digest is an approver deciding about nothing."""
+    workspace('[[rule]]\neffect = "approve"\n')
+
+    @guard(record_args=("to",))
+    def send(to: str, body: str) -> str:
+        return "sent"
+
+    send("ana@example.com", body="the whole quarterly report")
+
+    assert main(["pending"]) == 0
+    out = capsys.readouterr().out
+    assert "to = 'ana@example.com'" in out
+    # Only what the tool named. The body is in the digest and nowhere else.
+    assert "quarterly" not in out
 
 
 def test_check_reports_a_broken_policy_instead_of_raising(workspace, capsys):

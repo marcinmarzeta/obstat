@@ -128,6 +128,7 @@ class _Checked:
     subject_name: str
     resource: str
     args_digest: str
+    shown: dict[str, Any]
     verdict: policy.Decision
     approval_id: str | None
 
@@ -165,6 +166,7 @@ def guard(
     *,
     resource: str | Callable[[dict[str, Any]], str] | None = None,
     tool: str | None = None,
+    record_args: tuple[str, ...] = (),
 ):
     """Wrap a tool so that no call happens without a written decision.
 
@@ -175,6 +177,11 @@ def guard(
     `resource` is a format template over the call arguments, or a callable that
     takes them. Omit it and the resource is `tool:<name>`, which is enough when
     the tool is the only thing policy needs to distinguish.
+
+    `record_args` names the parameters whose **values** go into the record; every
+    other argument stays a digest and nothing else (§6.1). Name identifiers, not
+    payloads — the point is that an approver can tell which issue, which
+    document, which recipient, not that the log holds a copy of the message.
     """
 
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -203,6 +210,14 @@ def guard(
         bind_against = public.replace(
             parameters=[p for p in public.parameters.values() if p.name != APPROVAL_ARG]
         )
+        unknown = set(record_args) - set(bind_against.parameters)
+        if unknown:
+            # A name that matches no parameter would record nothing and say
+            # nothing about it — the same quiet, widening failure §2 refuses to
+            # accept from a typo'd policy key.
+            raise TypeError(
+                f"{name}: record_args names no such parameter: {', '.join(sorted(unknown))}"
+            )
 
         def refuse(
             code: str,
@@ -213,6 +228,7 @@ def guard(
             args_digest: str | None = None,
             rule: int | None = None,
             approval_id: str | None = None,
+            extra: dict[str, Any] | None = None,
         ) -> Denied:
             return Denied(
                 record.decision(
@@ -225,6 +241,7 @@ def guard(
                     rule=rule,
                     args_digest=args_digest or record.digest({}),
                     approval_id=approval_id,
+                    extra=extra,
                 )
             )
 
@@ -245,6 +262,16 @@ def guard(
             bound.apply_defaults()
             call_args = dict(bound.arguments)
             args_digest = record.digest(call_args)
+            # Only what the tool opted in to (§6.1). Missing from a partial bind
+            # is normal — the argument the caller left out has no value to show.
+            #
+            # ponytail: values go in whole. Cap or elide them if someone
+            # allowlists a parameter big enough to matter to a log that fsyncs.
+            shown = {key: call_args[key] for key in record_args if key in call_args}
+            # Built once: every record written from here down carries it, and a
+            # site that quietly did not would be a record missing what the one
+            # beside it has.
+            recorded = {"args_recorded": shown} if shown else None
 
             who = _resolver()
             subject = str(who) if who is not None else ANONYMOUS
@@ -252,7 +279,9 @@ def guard(
             # 2. The stop file, before policy: stopping must not depend on the
             #    policy file still being parseable.
             if paths.halt().exists():
-                raise refuse(HALTED, "halted", subject=subject, args_digest=args_digest)
+                raise refuse(
+                    HALTED, "halted", subject=subject, args_digest=args_digest, extra=recorded
+                )
 
             # 3. Resource.
             try:
@@ -264,12 +293,17 @@ def guard(
                     subject=subject,
                     resource_id="unresolved",
                     args_digest=args_digest,
+                    extra=recorded,
                 ) from exc
 
             # 4. Policy. Evaluated once; step 6 records this verdict, not a re-read.
             verdict = policy.decide(tool=name, subject=subject, resource=target)
             refusal = functools.partial(
-                refuse, subject=subject, resource_id=target, args_digest=args_digest
+                refuse,
+                subject=subject,
+                resource_id=target,
+                args_digest=args_digest,
+                extra=recorded,
             )
             if verdict.effect == "deny":
                 raise refusal(verdict.code, verdict.reason, rule=verdict.rule)
@@ -309,6 +343,10 @@ def guard(
                         rule=verdict.rule,
                         args_digest=args_digest,
                         approval_id=wanted,
+                        # The approver reads these off this record (§5.1): the
+                        # approvals table holds a digest, and a human cannot
+                        # decide about a digest.
+                        extra=recorded,
                     )
                     ttl, rejoined = approval.request(
                         wanted,
@@ -320,7 +358,7 @@ def guard(
                     )
                     raise _Pending(wanted, ttl, record_id, rejoined=rejoined)
 
-            return _Checked(who, subject, target, args_digest, verdict, approval_id)
+            return _Checked(who, subject, target, args_digest, shown, verdict, approval_id)
 
         def authorise(args: tuple, kwargs: dict) -> tuple[str, dict]:
             """Steps 1-6. Returns the record id and the kwargs the body will get."""
@@ -332,6 +370,8 @@ def guard(
             # deployment that never delegates is noise in the thing being read.
             if checked.subject and checked.subject.via:
                 extra["via"] = list(checked.subject.via)
+            if checked.shown:
+                extra["args_recorded"] = checked.shown
             record_id = record.decision(
                 tool=name,
                 subject=checked.subject_name,

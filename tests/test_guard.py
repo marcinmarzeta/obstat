@@ -203,6 +203,65 @@ def test_arguments_are_fingerprinted_not_stored(workspace):
     assert "hunter2" not in str(written)
 
 
+def test_only_the_named_arguments_are_recorded(workspace):
+    workspace(ALLOW_ALL)
+
+    @guard(record_args=("to",))
+    def send(to: str, secret: str) -> str:
+        return "sent"
+
+    send("ana@example.com", secret="hunter2")
+    written = record.read()[0]
+    assert written["args_recorded"] == {"to": "ana@example.com"}
+    # Naming one argument does not opt the others in, and the digest still
+    # covers all of them — the values are written beside it, not instead of it.
+    assert "hunter2" not in str(written)
+    assert written["args"] == record.digest({"to": "ana@example.com", "secret": "hunter2"})
+
+
+def test_nothing_is_recorded_unless_it_was_named(workspace):
+    workspace(ALLOW_ALL)
+
+    @guard()
+    def send(to: str) -> str:
+        return "sent"
+
+    send("ana@example.com")
+    assert "args_recorded" not in record.read()[0]
+
+
+def test_recording_an_argument_that_does_not_exist_is_refused_at_decoration(workspace):
+    workspace(ALLOW_ALL)
+
+    with pytest.raises(TypeError, match="record_args names no such parameter: recipient"):
+
+        @guard(record_args=("recipient",))
+        def send(to: str) -> str:
+            return "sent"
+
+
+def test_a_denial_records_the_named_arguments(workspace):
+    workspace('[[rule]]\neffect = "deny"\n')
+
+    @guard(record_args=("doc_id",))
+    def delete(doc_id: str) -> str:
+        return "gone"
+
+    with pytest.raises(Denied):
+        delete("q3-report")
+    # An examiner asking what was refused gets an answer, not a digest.
+    assert record.read()[0]["args_recorded"] == {"doc_id": "q3-report"}
+
+    # Every step that denies after the arguments are bound, not just policy: a
+    # record missing what the one beside it carries is the gap being closed.
+    (workspace.path / "halt").write_text("stopped\n", encoding="utf-8")
+    with pytest.raises(Denied):
+        delete("q4-report")
+    halted = record.read()[-1]
+    assert halted["code"] == HALTED
+    assert halted["args_recorded"] == {"doc_id": "q4-report"}
+
+
 def test_the_stop_file_denies_everything(workspace):
     workspace(ALLOW_ALL)
     halt = workspace.path / "halt"

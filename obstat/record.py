@@ -25,7 +25,7 @@ from typing import Any
 
 from . import paths
 
-SCHEMA = 3
+SCHEMA = 4
 
 # (log path, hash of the last record this process wrote). Re-read when the path
 # changes, the way policy re-reads its file.
@@ -46,8 +46,8 @@ def digest(args: dict[str, Any]) -> str:
     them is a liability rather than a control. The digest is enough to prove
     that the call executed is the call that was approved.
 
-    ponytail: no per-key allowlist yet. Add `record_args=("issue_key",)` to
-    @guard when someone needs the values in the record itself.
+    The digest covers **every** argument, including any the tool named in
+    `record_args` (§6.1). Those are written beside it, not instead of it.
     """
     canonical = json.dumps(args, sort_keys=True, default=repr, separators=(",", ":"))
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()

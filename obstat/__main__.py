@@ -91,9 +91,20 @@ def _pending(_: argparse.Namespace) -> int:
     if not rows:
         print("nothing waiting")
         return 0
+    # What the call was actually for lives on the record the approval was opened
+    # with, not in the approvals table (§5.1).
+    #
+    # ponytail: reads the whole log to find a handful of ids. Affordable in a
+    # human command in a way it would not be in front of every guarded call; if
+    # a long log ever makes this pause, stop at the oldest pending row's record.
+    recorded = {
+        entry["id"]: entry["args_recorded"] for entry in record.read() if entry.get("args_recorded")
+    }
     for row in rows:
         left = int(row.expires - time.time())
         print(f"{row.id}  {row.tool:24}  {row.subject:20}  {row.resource:30}  {left}s left")
+        for key, value in recorded.get(row.record_id, {}).items():
+            print(f"      {key} = {value!r}")
     return 0
 
 

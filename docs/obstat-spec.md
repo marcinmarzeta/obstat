@@ -140,6 +140,7 @@ def guard(
     *,
     resource: str | Callable[[dict[str, Any]], str] | None = None,
     tool: str | None = None,
+    record_args: tuple[str, ...] = (),
 ) -> Callable[[F], F]: ...
 ```
 
@@ -308,6 +309,16 @@ what it is waiting for instead of treating a working control as a failure.
 `waiting` is `True` when this rejoined an existing request, which is how an agent
 distinguishes "asked" from "asked again".
 
+The approvals table holds the argument *digest*, so `obstat pending` reads what
+the call was for off the record named in step 2 — anything the tool recorded
+under §6.1 is printed beneath the row:
+
+```console
+$ obstat pending
+d41b88f29a43  send_email  human:ana  tool:send_email  871s left
+      to = 'board@example.com'
+```
+
 **The id is derived, not invented.** A random id would mean every retry opens
 another approval, so an agent polling a slow human produces a queue of identical
 requests for that human to sort out — and the pile-up is worst exactly when
@@ -403,7 +414,7 @@ fragment, so one failed write costs one record instead of two — `obstat verify
 reports the fragment and everything after it still reads.
 
 ```json
-{"schema": 3,
+{"schema": 4,
  "id": "6430f1a38f8e470a898ca9a116dfb4cc",
  "ts": 1785545412.241792,
  "phase": "decision",
@@ -425,27 +436,61 @@ reports the fragment and everything after it still reads.
 the policy file, so a record points at the line that decided it. `prev` and
 `hash` are the chain (§6.3).
 
-Schema 2 added `prev` and `hash`; schema 3 added `code`. Records written at
-schema 1 have no chain fields and verify as *unverifiable* rather than as damaged
-— a log that predates the chain is not evidence of tampering.
+Schema 2 added `prev` and `hash`; schema 3 added `code`; schema 4 added
+`args_recorded` (§6.1). Records written at schema 1 have no chain fields and
+verify as *unverifiable* rather than as damaged — a log that predates the chain is
+not evidence of tampering.
 
 `via` (§1) is present on an `allow` record only when the subject carries a
 delegation chain: `"via": ["human:ana"]`. It is omitted rather than written empty,
 because `"via": []` on every record of every deployment that never delegates is
-noise in the thing an examiner has to read.
+noise in the thing an examiner has to read. `args_recorded` is omitted on the
+same grounds.
 
-### 6.1 Arguments are fingerprinted, not stored
+### 6.1 Arguments are fingerprinted, and named values are recorded
 
 `args` is `sha256:` over the canonical JSON of the bound arguments. The values
-are deliberately absent: tool arguments carry credentials, personal data and free
+are absent by default: tool arguments carry credentials, personal data and free
 text, and a governance log that leaks them is a liability rather than a control.
 The digest is enough to prove the call that executed is the call that was
 approved, which is what the record is for.
 
+A digest is not enough for the *other* reader. An approver deciding about
+`sha256:ae32e6…` is deciding about nothing, and the resource id only sometimes
+carries the answer — `doc:q3-report` does, `tool:send_email` does not. So a tool
+may name parameters whose values are recorded:
+
+```python
+@guard(record_args=("to", "issue_key"))
+```
+
+```json
+"args_recorded": {"to": "ana@example.com", "issue_key": "ACME-14"}
+```
+
+Normative:
+
+- The allowlist is **explicit and per tool**. There is no wildcard and no
+  "record everything" switch — the absent default is the safe one, and a
+  deployment that wants values names them.
+- Naming a parameter the tool does not have is a `TypeError` **at decoration**.
+  A name that matched nothing would record nothing and say nothing about it,
+  which is the same quiet widening §2 refuses from a typo'd policy key.
+- `args` still covers **every** argument. Recorded values are written beside the
+  digest, never instead of it, so the binding an approval rests on (§5.2) is
+  unchanged by what anyone chose to display.
+- The field is omitted when nothing was named, on the §6 grounds `via` is.
+- It appears on `allow`, `deny` and `approval_required` records alike: an
+  examiner asking what was refused deserves the same answer as an approver
+  asking what is waiting.
+
+Name identifiers, not payloads. The point is that a human can tell which issue,
+which document, which recipient — not that the log holds a copy of the message.
+
 ### 6.2 Outcome records
 
 ```json
-{"schema": 3, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
+{"schema": 4, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
  "prev": "…", "hash": "…"}
 ```
 
@@ -557,14 +602,12 @@ Ranked by how much they weaken the claim in the first paragraph.
 **No approver authority.** §5.4. Anything beyond a single operator needs the
 approver to be authenticated and distinct from the requester.
 
-**An approver cannot see what they are approving.** `obstat pending` shows the
-tool, the subject and the resource; the arguments are a digest and nothing more
-(§6.1). Where the resource template carries the meaning — `doc:q3-report` — that
-is enough to decide on. Where it does not, and `send_email` resolves to
-`tool:send_email`, the human presses approve blind, and an approval nobody can
-review is a rubber stamp with a record behind it. The answer is a per-key
-allowlist on `@guard` (`record_args=("issue_key",)`) surfaced in `obstat
-pending`. Recording every argument is not the answer, for the reason §6.1 gives.
+**An approver sees only what the tool chose to show.** §6.1 gives a tool
+`record_args`, and `obstat pending` prints it — but a tool that names nothing
+still sends a human a digest and a resource id to decide on. Nothing warns an
+operator that a rule with `effect = "approve"` sits in front of a tool that
+records no values, which is the configuration where the approval is a rubber
+stamp.
 
 **The chain is unkeyed, and nothing anchors its head.** §6.3 makes an edit or a
 deletion visible, which is where most of the value is — but anyone who can write
@@ -626,6 +669,11 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | the resource comes from the arguments | `test_resource_comes_from_the_arguments` |
 | an unresolvable resource denies | `test_an_unresolvable_resource_denies` |
 | arguments are fingerprinted, not stored | `test_arguments_are_fingerprinted_not_stored` |
+| only the named arguments are recorded | `test_only_the_named_arguments_are_recorded` |
+| nothing is recorded unless it was named | `test_nothing_is_recorded_unless_it_was_named` |
+| an argument that does not exist is refused at decoration | `test_recording_an_argument_that_does_not_exist_is_refused_at_decoration` |
+| a denial records the named arguments | `test_a_denial_records_the_named_arguments` |
+| an approver can see what they are approving | `test_pending_shows_what_is_being_approved` |
 | the stop file denies, and lifting it restores | `test_the_stop_file_denies_everything` |
 | approval is two-phase and does not run early | `TestApproval::test_first_call_asks_and_does_not_run` |
 | approval is single-use | `TestApproval::test_retry_after_approval_runs_once` |

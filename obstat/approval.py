@@ -57,6 +57,7 @@ class Pending:
     tool: str
     subject: str
     resource: str
+    record_id: str  # what an approver reads the call's details off (§5.1)
     created: float
     expires: float
 
@@ -193,7 +194,7 @@ def pending() -> list[Pending]:
     """Everything still waiting on a human, oldest first. Expired entries are hidden."""
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT id, tool, subject, resource, created, expires FROM approvals"
+            "SELECT id, tool, subject, resource, record_id, created, expires FROM approvals"
             " WHERE state='pending' AND expires > ? ORDER BY created",
             (time.time(),),
         ).fetchall()

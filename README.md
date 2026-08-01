@@ -199,14 +199,30 @@ file still being parseable.
 tested in CI — and a policy that does not parse is reported there rather than by
 the next real call.
 
+## Arguments
+
+Fingerprinted by default, never stored: tool arguments carry credentials and
+personal data, and a governance log that leaks them is a liability rather than a
+control. Name the ones a human needs and those values are recorded too —
+
+```python
+@guard(resource="tool:send_email", record_args=("to",))
+def send_email(to: str, body: str) -> str: ...
+```
+
+```console
+$ obstat pending
+d41b88f29a43  send_email  human:ana  tool:send_email  871s left
+      to = 'board@example.com'
+```
+
+— because an approver deciding about `sha256:ae32e6…` is deciding about nothing.
+The digest still covers every argument; `body` is in it and nowhere else. Name
+identifiers, not payloads.
+
 ## What is not here yet
 
-Arguments are fingerprinted (`sha256:…`), never stored — tool arguments carry
-credentials and personal data, and a governance log that leaks them is a liability
-rather than a control. A per-key allowlist for recording chosen values is the
-obvious next step.
-
-Also absent, deliberately: retention and rotation of the log, Slack and webhook
+Deliberately absent: retention and rotation of the log, Slack and webhook
 approval channels, a policy for where a result may be *sent*, and anything that
 talks to a cloud. Those belong at the edges, and the edges should be adapters
 rather than dependencies.
