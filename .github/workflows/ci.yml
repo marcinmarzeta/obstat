@@ -11,16 +11,16 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        python: ["3.11", "3.12", "3.13"]
-        # Windows cannot fsync a directory (§8), which the first record write
-        # depends on. One leg, so the platform where that is skipped is a
-        # platform the tests actually run on.
+        python: ["3.11", "3.12", "3.13", "3.14"]
+        # One Windows leg, because the guarantees obstat gives are the ones
+        # that platform is weakest on: no directory fsync, and no atomic append
+        # across processes (§8). It found the second of those on its first run.
         include:
           - os: windows-latest
             python: "3.12"
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v9
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --all-extras
