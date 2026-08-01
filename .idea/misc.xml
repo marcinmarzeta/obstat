@@ -4,4 +4,7 @@
     <execution />
   </component>
   <component name="KubernetesApiProvider">{}</component>
+  <component name="ProjectRootManager" version="2">
+    <output url="file://$PROJECT_DIR$/out" />
+  </component>
 </project>
