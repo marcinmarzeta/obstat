@@ -1,6 +1,6 @@
 [project]
 name = "obstat"
-version = "0.2.0"
+version = "0.3.0"
 description = "An auditable decision record for agent tool calls. The clearance is written down before the call runs."
 readme = "README.md"
 requires-python = ">=3.11"
