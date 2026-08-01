@@ -16,13 +16,36 @@ must not authorise sending a different one.
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 import time
 from dataclasses import dataclass
 
 from . import paths
 
-TTL_SECONDS = 900  # 15 minutes: long enough to reach a human, short enough to expire
+DEFAULT_TTL_SECONDS = 900  # 15 minutes: long enough to reach a human, short enough to expire
+
+
+def ttl() -> int:
+    """How long an approval stays usable, from `OBSTAT_APPROVAL_TTL` (§7).
+
+    Read at call time rather than frozen at import, like every path beside it.
+    A value that is not a positive number raises instead of falling back to the
+    default: an approval that expires before anyone reads it turns every
+    `approve` rule into a call that can never succeed, and a silent fallback is
+    how that gets diagnosed as obstat being broken.
+    """
+    raw = os.environ.get("OBSTAT_APPROVAL_TTL") or DEFAULT_TTL_SECONDS
+    try:
+        seconds = int(raw)
+    except ValueError:
+        # int()'s own message quotes the value but not where it came from, and
+        # the variable is the half an operator needs to fix it.
+        raise ValueError(f"OBSTAT_APPROVAL_TTL is not a number: {raw!r}") from None
+    if seconds <= 0:
+        raise ValueError(f"OBSTAT_APPROVAL_TTL must be positive, got {seconds}")
+    return seconds
+
 
 # Stable codes (§6.4). `guard` branches on PENDING — a retry that arrives before
 # anyone has answered is not a failure — so these are load-bearing, not labels.
@@ -100,6 +123,9 @@ def request(
     made twice legitimately is not the same request.
     """
     now = time.time()
+    # Before the transaction: a bad TTL should fail where nothing has been
+    # written, not between the INSERT and the COMMIT.
+    window = ttl()
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -118,7 +144,7 @@ def request(
                 (
                     approval_id,
                     now,
-                    now + TTL_SECONDS,
+                    now + window,
                     tool,
                     subject,
                     resource,
@@ -127,7 +153,7 @@ def request(
                 ),
             )
             conn.execute("COMMIT")
-            return TTL_SECONDS, False
+            return window, False
         except BaseException:
             conn.execute("ROLLBACK")
             raise

@@ -136,7 +136,15 @@ def _append(entry: dict[str, Any], *, durable: bool) -> None:
         # fsync on the file does not make its directory entry durable, so the very
         # first record could survive as data with nothing pointing at it. Only the
         # write that creates the log needs this; every later one reuses the entry.
-        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            dir_fd = os.open(path.parent, os.O_RDONLY)
+        except OSError:
+            # Windows will not open a directory as a descriptor at all, so this
+            # guarantee is unavailable there rather than skipped — the record's
+            # own fsync has already happened either way (§8). Narrow on purpose:
+            # a directory that fails to *sync* still raises, because that is a
+            # platform which can do this and did not.
+            return
         try:
             os.fsync(dir_fd)
         finally:

@@ -174,8 +174,8 @@ after `write` and `fsync` — and, on the write that creates the log file, an
 `fsync` of the containing directory too, since a synced file whose directory
 entry is not synced can survive a crash with nothing pointing at it. That
 directory sync opens a directory as a file descriptor, which POSIX allows and
-Windows does not — §8. If the
-process dies between 6 and 7, the
+Windows does not; where it cannot be opened it is skipped, and §8 says what that
+costs. If the process dies between 6 and 7, the
 record says `allow` and no outcome follows, which reads as "authorised, did not
 complete" — a state an examiner can act on. The reverse ordering produces
 "executed, no idea whether it was allowed", which is the state that costs an
@@ -289,8 +289,8 @@ Policy said `approve` and no usable approval was supplied. obstat:
 1. Derives the approval id: `sha256(tool | subject | resource | args_digest)[:12]`.
 2. Writes a decision record with `effect: "approval_required"`, naming that id.
 3. Inserts a `pending` row bound to `(tool, subject, resource, args_digest)` with
-   `expires = now + 900s` — **or rejoins** the row already there, if one is still
-   `pending` or `approved` and unexpired.
+   `expires = now + OBSTAT_APPROVAL_TTL` (§7, 900s by default) — **or rejoins**
+   the row already there, if one is still `pending` or `approved` and unexpired.
 4. Returns — **does not raise** — this value:
 
 ```python
@@ -592,6 +592,12 @@ is a library nobody can try.
 | `OBSTAT_LOG` | `.obstat/decisions.jsonl` |
 | `OBSTAT_DB` | `.obstat/approvals.db` |
 | `OBSTAT_HALT` | `.obstat/halt` |
+| `OBSTAT_APPROVAL_TTL` | `900` (seconds) |
+
+A TTL that is not a positive number raises rather than falling back to the
+default. An approval window of zero turns every `approve` rule into a call that
+asks, expires and asks again, and a silent fallback is how that gets diagnosed as
+obstat being broken instead of as a typo.
 
 ---
 
@@ -618,21 +624,17 @@ against the operator.
 
 **The stop file is all-or-nothing.** §3.4.
 
-**The approval TTL is fixed.** 900 seconds, a module constant, absent from §7
-while every path beside it is configurable. A request raised after hours expires
-unanswered, and §5.3 is explicit that expiry denies.
-
 **No retention or rotation on the log.** It grows without bound, and nothing says
 how long a record must be kept. Rotation has to carry the chain across files as
 well, or every new file begins at `prev: null` and a deletion at the seam is
 indistinguishable from a rollover.
 
-**POSIX only, without saying so.** The directory sync in §3.1 opens a directory
-as a file descriptor, which Windows refuses, so the write that *creates* the log
-fails there; every write after it would be fine, which makes this a first-run
-failure rather than a degradation. Either that sync is skipped where it cannot be
-done — losing the guarantee it exists for — or the package declares POSIX. It
-currently does neither.
+**The directory sync does not happen on Windows.** It opens a directory as a file
+descriptor, which Windows refuses, so there it is skipped rather than performed
+(§3.1) and the guarantee it exists for — that the log's own directory entry
+survives a crash — is unavailable on that platform. The record's `fsync` still
+happens, so this costs the *first* write of a new log file and nothing after it.
+A platform that can open the directory and then fails to sync it still raises.
 
 **No egress control.** Nothing asks where a result is allowed to go, which is the
 control that matters for tools that send mail or post to channels.
@@ -661,6 +663,7 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | a caller cannot name itself | `test_a_caller_cannot_supply_its_own_subject` |
 | a colliding `subject` parameter is refused at decoration | `test_a_subject_that_would_collide_is_refused_at_decoration` |
 | a delegation chain reaches the record | `test_a_delegation_chain_reaches_the_record` |
+| the approval window is configurable, and a useless one raises | `test_the_approval_window_is_configurable` |
 | an edited record is caught | `TestChain::test_an_edited_record_is_caught` |
 | a removed record is caught | `TestChain::test_a_removed_record_is_caught` |
 | recomputing one hash does not hide the edit | `TestChain::test_a_reused_hash_does_not_hide_an_edit` |

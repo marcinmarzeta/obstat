@@ -235,6 +235,7 @@ rather than dependencies.
 | `OBSTAT_LOG` | `.obstat/decisions.jsonl` |
 | `OBSTAT_DB` | `.obstat/approvals.db` |
 | `OBSTAT_HALT` | `.obstat/halt` |
+| `OBSTAT_APPROVAL_TTL` | `900` (seconds) |
 
 Read at call time, never at import. A library that raises on import is a library
 you cannot try.

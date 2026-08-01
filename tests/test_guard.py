@@ -279,6 +279,23 @@ def test_the_stop_file_denies_everything(workspace):
     assert anything() == "ran"
 
 
+def test_the_approval_window_is_configurable(workspace, monkeypatch):
+    workspace('[[rule]]\neffect = "approve"\n')
+    monkeypatch.setenv("OBSTAT_APPROVAL_TTL", "60")
+
+    @guard()
+    def sensitive() -> str:
+        return "ran"
+
+    assert sensitive()["expires_in_seconds"] == 60
+
+    # A window that cannot work is not quietly replaced by one that can: every
+    # call would ask, expire, and ask again, and nothing would say why.
+    monkeypatch.setenv("OBSTAT_APPROVAL_TTL", "0")
+    with pytest.raises(ValueError, match="must be positive"):
+        sensitive()
+
+
 class TestApproval:
     POLICY = '[[rule]]\ntool = "transition"\neffect = "approve"\n'
 

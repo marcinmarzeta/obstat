@@ -7,10 +7,17 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        os: [ubuntu-latest]
         python: ["3.11", "3.12", "3.13"]
+        # Windows cannot fsync a directory (§8), which the first record write
+        # depends on. One leg, so the platform where that is skipped is a
+        # platform the tests actually run on.
+        include:
+          - os: windows-latest
+            python: "3.12"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
