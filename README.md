@@ -74,7 +74,7 @@ the whole story.
 ## What it is not
 
 There are several good libraries that gate MCP tool calls. This one is built
-around a narrower claim: **the record is the product.** Three things follow from
+around a narrower claim: **the record is the product.** Four things follow from
 that, and they are the reason to pick this over a permission wrapper.
 
 **The decision is durable before the body runs.** Not flushed after, not written
@@ -103,6 +103,19 @@ resource and a digest of the arguments, and it is single-use. Approving "delete
 q3-report" cannot be spent on deleting something else, and cannot be spent twice.
 This is enforced in one `BEGIN IMMEDIATE` transaction, so two concurrent retries
 cannot both win.
+
+**The record says when it has been edited.** Every record carries the hash of the
+one before it, and `obstat verify` recomputes the chain:
+
+```console
+$ obstat verify
+line 3: record cd53f9db… follows a record that is no longer in the log
+```
+
+An edited line and a deleted line both show up. A truncated tail does not, and
+anyone who can write the file can recompute the whole chain — this is
+tamper-evidence, not non-repudiation, and
+[§8](docs/obstat-spec.md#8-still-open) says so in those words.
 
 ## Identity is optional
 
@@ -167,6 +180,7 @@ obstat pending              # approvals waiting on a human
 obstat approve <id> [--by]  # decide
 obstat deny <id> [--by]
 obstat log -n 50            # the decision record
+obstat verify               # recompute the chain; exit 1 if anything was edited
 obstat stop                 # deny every guarded call
 obstat resume
 ```

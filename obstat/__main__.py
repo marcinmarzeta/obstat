@@ -4,6 +4,7 @@ obstat pending
 obstat approve <id>
 obstat deny <id>
 obstat log [-n 20]
+obstat verify
 obstat stop | resume
 """
 
@@ -46,6 +47,14 @@ def _log(args: argparse.Namespace) -> int:
     return 0
 
 
+def _verify(_: argparse.Namespace) -> int:
+    if problems := record.verify():
+        print(*problems, sep="\n", file=sys.stderr)
+        return 1
+    print("chain intact")
+    return 0
+
+
 def _stop(_: argparse.Namespace) -> int:
     path = paths.halt()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -75,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
     log = sub.add_parser("log", help="the decision record, oldest first")
     log.add_argument("-n", type=int, default=20, help="how many entries (default 20)")
     log.set_defaults(run=_log)
+
+    sub.add_parser("verify", help="recompute the record chain").set_defaults(run=_verify)
 
     sub.add_parser("stop", help="deny every guarded call").set_defaults(run=_stop)
     sub.add_parser("resume", help="undo stop").set_defaults(run=_resume)

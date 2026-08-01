@@ -9,6 +9,7 @@ that can tell the difference.
 from __future__ import annotations
 
 import inspect
+import json
 
 import pytest
 
@@ -332,6 +333,80 @@ class TestApproval:
         with pytest.raises(Denied):
             transition("ACME-1", to="Done", obstat_approval_id="deadbeef")
         assert record.read()[-1]["reason"] == "unknown approval"
+
+
+class TestChain:
+    """A log anyone can rewrite proves less than it looks like it does (§6.3)."""
+
+    @staticmethod
+    def two_calls(workspace):
+        workspace(ALLOW_ALL)
+
+        @guard()
+        def act(what: str) -> str:
+            return what
+
+        act("one")
+        act("two")
+        log = workspace.path / "decisions.jsonl"
+        assert record.verify(log) == []  # nothing touched it yet
+        return log
+
+    @staticmethod
+    def rewrite(log, lines: list[str]) -> None:
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def test_an_edited_record_is_caught(self, workspace):
+        log = self.two_calls(workspace)
+        lines = log.read_text(encoding="utf-8").splitlines()
+
+        # Rewriting history so the call reads as one that was refused.
+        edited = json.loads(lines[0])
+        edited["effect"] = "deny"
+        lines[0] = json.dumps(edited, separators=(",", ":"))
+        self.rewrite(log, lines)
+
+        assert "has been altered" in " ".join(record.verify(log))
+
+    def test_a_removed_record_is_caught(self, workspace):
+        log = self.two_calls(workspace)
+        lines = log.read_text(encoding="utf-8").splitlines()
+
+        # Deleting the record of the call outright. Its outcome still points at it.
+        del lines[0]
+        self.rewrite(log, lines)
+
+        assert "no longer in the log" in " ".join(record.verify(log))
+
+    def test_a_reused_hash_does_not_hide_an_edit(self, workspace):
+        log = self.two_calls(workspace)
+        lines = log.read_text(encoding="utf-8").splitlines()
+
+        # Editing a record and leaving its stored hash alone is the lazy forgery;
+        # recomputing the hash but not the successor's `prev` is the other one.
+        edited = json.loads(lines[0])
+        edited["effect"] = "deny"
+        edited["hash"] = record._chain_hash(edited)
+        lines[0] = json.dumps(edited, separators=(",", ":"))
+        self.rewrite(log, lines)
+
+        assert "no longer in the log" in " ".join(record.verify(log))
+
+    def test_a_torn_line_does_not_swallow_the_next_record(self, workspace):
+        log = self.two_calls(workspace)
+        # What a write cut short by a full disk leaves behind: no trailing newline.
+        with log.open("a", encoding="utf-8") as handle:
+            handle.write('{"schema":2,"id":"torn"')
+
+        @guard()
+        def act(what: str) -> str:
+            return what
+
+        act("three")
+
+        # Exactly one problem, and it is the fragment. Anything less readable than
+        # that — a spliced decision record, a dangling outcome — shows up here too.
+        assert record.verify(log) == ["line 5: not a record"]
 
 
 async def test_async_tools_go_through_the_same_gate(workspace):

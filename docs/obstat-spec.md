@@ -364,10 +364,17 @@ implement it. §8.
 JSONL, one object per line, appended with `O_APPEND` so concurrent writers
 interleave records but never split one. Each record is a single unbuffered
 `write()`, which is what makes that true — a buffered text write splits anything
-past its buffer into several syscalls, and only one syscall is atomic.
+past its buffer into several syscalls, and only one syscall is atomic. Within a
+process one lock covers hashing and appending together (§6.3); across processes
+there is still no lock.
+
+A write cut short by a full disk leaves a fragment with no closing newline. The
+next record starts on a fresh line rather than splicing itself onto that
+fragment, so one failed write costs one record instead of two — `obstat verify`
+reports the fragment and everything after it still reads.
 
 ```json
-{"schema": 1,
+{"schema": 2,
  "id": "6430f1a38f8e470a898ca9a116dfb4cc",
  "ts": 1785545412.241792,
  "phase": "decision",
@@ -379,11 +386,18 @@ past its buffer into several syscalls, and only one syscall is atomic.
  "rule": 1,
  "args": "sha256:ae32e699…",
  "approval_id": "d41b88f29a43",
- "subject_verified": false}
+ "subject_verified": false,
+ "prev": "sha256:1f0c4b7d…",
+ "hash": "sha256:9d2ae410…"}
 ```
 
 `effect` is one of `allow`, `deny`, `approval_required`. `rule` is the index into
-the policy file, so a record points at the line that decided it.
+the policy file, so a record points at the line that decided it. `prev` and
+`hash` are the chain (§6.3).
+
+Schema 2 added `prev` and `hash`. Records written at schema 1 have neither and
+verify as *unverifiable* rather than as damaged — a log that predates the chain
+is not evidence of tampering.
 
 `via` (§1) is present on an `allow` record only when the subject carries a
 delegation chain: `"via": ["human:ana"]`. It is omitted rather than written empty,
@@ -401,7 +415,8 @@ approved, which is what the record is for.
 ### 6.2 Outcome records
 
 ```json
-{"schema": 1, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null}
+{"schema": 2, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
+ "prev": "…", "hash": "…"}
 ```
 
 `error` is the exception class name, never its message — messages carry the same
@@ -412,6 +427,61 @@ here is suppressed. If the process dies between the body and this line, the
 decision record stands alone and reads as "authorised, outcome unknown", which is
 the honest state. A second `fsync` for something merely informative is paying
 twice for half the value.
+
+Outcome records are in the chain even though they are not durable. `ok` and
+`error` are worth as much to a reader as the decision itself, and a record left
+out of the chain is a record anyone may rewrite freely.
+
+### 6.3 The chain
+
+Every record carries `hash`, the SHA-256 of its own remaining fields serialised
+with sorted keys, and `prev`, the `hash` of the record before it. `obstat verify`
+recomputes both for every line.
+
+```console
+$ obstat verify
+chain intact
+
+$ obstat verify
+line 3: record cd53f9db… follows a record that is no longer in the log
+```
+
+Exit status is 1 when anything is reported.
+
+The predecessor is read from the file once per process, so restarting a server
+continues the chain rather than starting a second one beside it. Within a process
+the read and the append happen under one lock, so records are hashed in the order
+they land.
+
+**Concurrent processes fork the chain**, and that is accepted rather than
+prevented. Two servers appending to one log both chain from the record they last
+saw, so the file holds interleaved strands instead of one line. Verification does
+not care: it checks that each `prev` names a record still present earlier in the
+file, which holds for a forked chain and fails for a removed one. The alternative
+— an inter-process lock around every decision — would put a file lock on the path
+that exists to be fast enough to sit in front of every tool call.
+
+#### What this catches, and what it does not
+
+Caught:
+
+- a record whose contents were edited, whether or not its `hash` was recomputed
+- a record removed from anywhere but the end
+- a line that no longer parses
+
+Not caught, and neither is an oversight:
+
+- **records removed from the end.** Nothing points at them. Detecting a truncated
+  tail needs a counter-signed head published somewhere the log's owner does not
+  control.
+- **a wholesale rewrite.** The chain is unkeyed, so anyone who can write the file
+  can recompute every hash in it. This is tamper-*evidence* — it raises the cost
+  of a quiet edit from `sed` to a deliberate forgery, and it makes an accidental
+  edit obvious. It is not non-repudiation, and §8 says so.
+
+A damaged log does not stop a guarded call. The new record chains from `null` and
+`obstat verify` reports the break, because refusing to serve on a corrupt log
+would let anyone who can append one byte turn every guarded tool off.
 
 ---
 
@@ -442,9 +512,15 @@ approver to be authenticated and distinct from the requester.
 tests and unstable enough that no one should parse them. They want to be an enum
 with the prose as a separate field.
 
-**No retention, rotation or integrity protection on the log.** An append-only
-file that anyone can rewrite proves less than it appears to. Append-only storage
-and per-record hash chaining are the obvious answers; neither is here.
+**The chain is unkeyed, and nothing anchors its head.** §6.3 makes an edit or a
+deletion visible, which is where most of the value is — but anyone who can write
+the log can recompute every hash in it, and a truncated tail leaves nothing
+dangling. The answers are a head published where the log's owner cannot reach it,
+or append-only storage. Neither is here, so this is tamper-evidence and not proof
+against the operator.
+
+**No retention or rotation on the log.** It grows without bound, and nothing says
+how long a record must be kept.
 
 **No egress control.** Nothing asks where a result is allowed to go, which is the
 control that matters for tools that send mail or post to channels.
@@ -469,6 +545,10 @@ implementation of them.
 | a caller cannot name itself | `test_a_caller_cannot_supply_its_own_subject` |
 | a colliding `subject` parameter is refused at decoration | `test_a_subject_that_would_collide_is_refused_at_decoration` |
 | a delegation chain reaches the record | `test_a_delegation_chain_reaches_the_record` |
+| an edited record is caught | `TestChain::test_an_edited_record_is_caught` |
+| a removed record is caught | `TestChain::test_a_removed_record_is_caught` |
+| recomputing one hash does not hide the edit | `TestChain::test_a_reused_hash_does_not_hide_an_edit` |
+| a torn line does not swallow the next record | `TestChain::test_a_torn_line_does_not_swallow_the_next_record` |
 | `subject` unadvertised, approval id advertised | `test_injected_subject_is_not_advertised…` |
 | the resource comes from the arguments | `test_resource_comes_from_the_arguments` |
 | an unresolvable resource denies | `test_an_unresolvable_resource_denies` |
