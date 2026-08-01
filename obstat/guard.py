@@ -417,7 +417,11 @@ def guard(
                 try:
                     result = await fn(*args, **kwargs)
                 except Exception as exc:
-                    record.outcome(record_id, ok=False, error=type(exc).__name__)
+                    # `__qualname__`, because a nested exception class has a
+                    # `__name__` that identifies nothing: `imaplib.IMAP4.error`
+                    # records as "error". Same leak-nothing property, one more
+                    # dotted component.
+                    record.outcome(record_id, ok=False, error=type(exc).__qualname__)
                     raise
                 record.outcome(record_id, ok=True)
                 return result
@@ -433,7 +437,11 @@ def guard(
                 try:
                     result = fn(*args, **kwargs)
                 except Exception as exc:
-                    record.outcome(record_id, ok=False, error=type(exc).__name__)
+                    # `__qualname__`, because a nested exception class has a
+                    # `__name__` that identifies nothing: `imaplib.IMAP4.error`
+                    # records as "error". Same leak-nothing property, one more
+                    # dotted component.
+                    record.outcome(record_id, ok=False, error=type(exc).__qualname__)
                     raise
                 record.outcome(record_id, ok=True)
                 return result

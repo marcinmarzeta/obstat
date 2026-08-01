@@ -542,8 +542,10 @@ which document, which recipient — not that the log holds a copy of the message
  "prev": "…", "hash": "…"}
 ```
 
-`error` is the exception class name, never its message — messages carry the same
-data the arguments do.
+`error` is the exception class's qualified name, never its message — messages
+carry the same data the arguments do. Qualified (`__qualname__`) rather than bare,
+because a class nested inside another has a bare name that identifies nothing:
+`imaplib.IMAP4.error` is recorded as `IMAP4.error`, not as `error`.
 
 Written after execution, **not** durable, and never able to fail a call: `OSError`
 here is suppressed. If the process dies between the body and this line, the

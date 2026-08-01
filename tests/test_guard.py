@@ -59,18 +59,26 @@ def test_outcome_is_recorded_after(workspace):
     assert entries[1]["id"] == entries[0]["id"]
 
 
+class Client:
+    """Nested the way `imaplib.IMAP4.error` is, which is where this came from:
+    its bare `__name__` is "error", naming nothing a reader could act on."""
+
+    class error(Exception):
+        pass
+
+
 def test_a_failing_body_still_leaves_both_records(workspace):
     workspace(ALLOW_ALL)
 
     @guard()
     def explodes() -> str:
-        raise ValueError("boom")
+        raise Client.error("boom")
 
-    with pytest.raises(ValueError):
+    with pytest.raises(Client.error):
         explodes()
     entries = record.read()
     assert entries[0]["effect"] == "allow"
-    assert entries[1] == {**entries[1], "phase": "outcome", "ok": False, "error": "ValueError"}
+    assert entries[1] == {**entries[1], "phase": "outcome", "ok": False, "error": "Client.error"}
 
 
 def test_an_unknown_effect_is_refused(workspace):
