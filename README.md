@@ -1,5 +1,10 @@
 # obstat
 
+[![PyPI](https://img.shields.io/pypi/v/obstat)](https://pypi.org/project/obstat/)
+[![Python](https://img.shields.io/pypi/pyversions/obstat)](https://pypi.org/project/obstat/)
+[![CI](https://github.com/marcinmarzeta/obstat/actions/workflows/ci.yml/badge.svg)](https://github.com/marcinmarzeta/obstat/actions/workflows/ci.yml)
+[![License](https://img.shields.io/pypi/l/obstat)](LICENSE)
+
 **An auditable decision record for agent tool calls.** The clearance is written
 down before the call runs — not reconstructed from logs afterwards.
 
