@@ -11,12 +11,13 @@ import tomllib
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from . import paths
 
 Effect = Literal["allow", "deny", "approve"]
-EFFECTS: tuple[Effect, ...] = ("allow", "deny", "approve")
+# Derived, so the set a rule is validated against cannot drift from the type.
+EFFECTS: tuple[Effect, ...] = get_args(Effect)
 
 ANONYMOUS = "anonymous"
 

@@ -55,7 +55,6 @@ USED = "approval_used"
 DENIED = "approval_denied"
 PENDING = "approval_pending"
 EXPIRED = "approval_expired"
-SPENT = "approval_spent"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS approvals (
@@ -210,7 +209,9 @@ def consume(
                 return False, EXPIRED, "approval expired"
             conn.execute("UPDATE approvals SET state='consumed' WHERE id=?", (approval_id,))
             conn.execute("COMMIT")
-            return True, SPENT, "approved"
+            # No constant: nothing branches on the code once `ok` is True, and
+            # §5.3 records the policy's `rule_matched` on the call that follows.
+            return True, "approval_spent", "approved"
         except BaseException:
             conn.execute("ROLLBACK")
             raise

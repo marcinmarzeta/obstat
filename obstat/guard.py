@@ -23,7 +23,6 @@ from typing import Any, Literal
 
 from . import approval, paths, policy, record
 
-ANONYMOUS = policy.ANONYMOUS
 APPROVAL_ARG = "obstat_approval_id"
 
 # Stable codes for the refusals `guard` raises itself (§6.4).
@@ -31,12 +30,6 @@ SUBJECT_SUPPLIED = "subject_supplied"
 ARGUMENTS_REJECTED = "arguments_rejected"
 HALTED = "halted"
 RESOURCE_UNRESOLVED = "resource_unresolved"
-
-_BY_POSITION = (
-    inspect.Parameter.POSITIONAL_ONLY,
-    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-    inspect.Parameter.VAR_POSITIONAL,
-)
 
 
 class Denied(Exception):
@@ -197,8 +190,9 @@ def guard(
             # already on disk and the failure reads as a call that broke after
             # being authorised.
             after = params[[p.name for p in params].index("subject") + 1 :]
+            by_keyword = (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.VAR_KEYWORD)
             if original.parameters["subject"].kind is inspect.Parameter.POSITIONAL_ONLY or any(
-                p.kind in _BY_POSITION for p in after
+                p.kind not in by_keyword for p in after
             ):
                 raise TypeError(
                     f"{name}: obstat injects `subject` by keyword, so it must come last "
@@ -223,7 +217,7 @@ def guard(
             code: str,
             reason: str,
             *,
-            subject: str = ANONYMOUS,
+            subject: str = policy.ANONYMOUS,
             resource_id: str | None = None,
             args_digest: str | None = None,
             rule: int | None = None,
@@ -274,7 +268,7 @@ def guard(
             recorded = {"args_recorded": shown} if shown else None
 
             who = _resolver()
-            subject = str(who) if who is not None else ANONYMOUS
+            subject = str(who) if who is not None else policy.ANONYMOUS
 
             # 2. The stop file, before policy: stopping must not depend on the
             #    policy file still being parseable.
