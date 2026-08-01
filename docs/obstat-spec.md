@@ -301,10 +301,20 @@ The wrapper's `__signature__` is the wrapped function's, minus `subject`, plus:
 obstat_approval_id: str | None = None  # keyword-only
 ```
 
+The **return annotation is widened** to `R | dict[str, Any]`, where `R` is what
+the body declared. A tool declaring `-> str` is telling the truth about its own
+result and not about its wrapper's: policy may send the call to a human and
+obstat returns §5.1's payload instead. A server validates a tool's result against
+this annotation, so without the widening an approval reaches the client as a
+protocol error — the exact outcome §5.1 returns rather than raises to avoid. An
+undeclared return is left undeclared; there is nothing to validate against.
+
 MCP servers generate their tool schema from that signature, so a client sees the
 approval argument — it needs to, for §5.2 — and cannot see `subject`. Verified
-against the MCP SDK in the example server: `delete_document` advertises
-`['doc_id', 'obstat_approval_id']`.
+against the MCP SDK by calling through it, not by reading the signature:
+`delete_document` advertises `['doc_id', 'obstat_approval_id']`, an allowed call
+returns its result, and an approval-required call returns the §5.1 payload with
+`is_error` false.
 
 ---
 
@@ -336,9 +346,11 @@ Policy said `approve` and no usable approval was supplied. obstat:
 ```
 
 A return rather than an error, so the agent can reason about it and tell the user
-what it is waiting for instead of treating a working control as a failure.
-`waiting` is `True` when this rejoined an existing request, which is how an agent
-distinguishes "asked" from "asked again".
+what it is waiting for instead of treating a working control as a failure. This
+is why §4.2 widens the advertised return: a server that validates results against
+the declared type would otherwise turn this payload back into the error it exists
+not to be. `waiting` is `True` when this rejoined an existing request, which is
+how an agent distinguishes "asked" from "asked again".
 
 The approvals table holds the argument *digest*, so `obstat pending` reads what
 the call was for off the record named in step 2 — anything the tool recorded
@@ -711,6 +723,7 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | within one process the chain stays a line | `TestConcurrency::test_threads_do_not_split_a_record` |
 | a forked chain verifies | `TestConcurrency::test_a_forked_chain_still_verifies` |
 | `subject` unadvertised, approval id advertised | `test_injected_subject_is_not_advertised…` |
+| an approval is a return value through a real MCP server | `test_an_approval_survives_a_real_mcp_server` |
 | the resource comes from the arguments | `test_resource_comes_from_the_arguments` |
 | a template matches only the spelling it was given | `test_a_template_matches_only_the_spelling_it_was_given` |
 | a callable resource normalises what policy matches | `test_a_callable_resource_normalises_what_policy_matches` |

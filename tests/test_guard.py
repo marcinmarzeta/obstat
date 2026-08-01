@@ -660,6 +660,48 @@ class TestConcurrency:
         assert record.verify() == []
 
 
+async def test_an_approval_survives_a_real_mcp_server(workspace):
+    """Through the SDK, not past it (§4.2).
+
+    Every other test calls the decorated function directly, which is exactly how
+    a server validating the tool's result against its return annotation went
+    unnoticed: a tool declaring `-> str` raised at the client the moment policy
+    sent a call to a human, turning the control §5.1 designed as a return value
+    into a protocol error.
+    """
+    server = pytest.importorskip("mcp.server", reason="mcp is an optional extra")
+    workspace('[[rule]]\ntool = "read_*"\neffect = "allow"\n[[rule]]\neffect = "approve"\n')
+
+    mcp = server.MCPServer("test")
+
+    @mcp.tool()
+    @guard()
+    def read_thing(doc_id: str) -> str:
+        return f"contents of {doc_id}"
+
+    @mcp.tool()
+    @guard()
+    def delete_thing(doc_id: str) -> str:  # pragma: no cover - waits for a human
+        return f"{doc_id} deleted"
+
+    advertised = await mcp.list_tools()
+    assert {tool.name for tool in advertised} == {"read_thing", "delete_thing"}
+
+    allowed = await mcp.call_tool("read_thing", {"doc_id": "q3"})
+    assert allowed.is_error is False
+    assert allowed.content[0].text == "contents of q3"
+
+    # The one that used to raise.
+    asked = await mcp.call_tool("delete_thing", {"doc_id": "q3"})
+    assert asked.is_error is False
+    assert json.loads(asked.content[0].text)["obstat"] == "approval_required"
+
+    assert [entry["effect"] for entry in record.read() if entry["phase"] == "decision"] == [
+        "allow",
+        "approval_required",
+    ]
+
+
 async def test_async_tools_go_through_the_same_gate(workspace):
     workspace('[[rule]]\ntool = "fetch"\neffect = "allow"\n[[rule]]\neffect = "deny"\n')
 

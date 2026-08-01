@@ -126,12 +126,33 @@ class _Checked:
     approval_id: str | None
 
 
+def _widened_return(returns: Any) -> Any:
+    """The advertised return: what the body promises, or the §5.1 payload.
+
+    A server validates a tool's result against this. A tool annotated `-> str`
+    therefore fails when policy sends the call to a human and obstat returns the
+    approval payload instead — the control reaches the client as a protocol
+    error, which is the opposite of what §5.1 returns rather than raises for.
+    """
+    if returns is inspect.Signature.empty:
+        return returns  # nothing declared, so nothing to validate against
+    try:
+        return returns | dict[str, Any]
+    except TypeError:
+        # `from __future__ import annotations` leaves the annotation a string,
+        # and a string has no `|`. Servers resolve either form the same way.
+        return f"{returns} | dict[str, Any]"
+
+
 def _public_signature(original: inspect.Signature) -> inspect.Signature:
-    """The signature callers see: `subject` removed, `obstat_approval_id` added.
+    """The signature callers see: `subject` removed, `obstat_approval_id` added,
+    and the return widened to admit the approval payload.
 
     `subject` is injected by obstat, so leaving it in the advertised schema would
     invite a client to supply its own. The approval id is the opposite — the
-    retry protocol needs the caller to send it, so it has to be advertised.
+    retry protocol needs the caller to send it, so it has to be advertised. The
+    return is widened for the same reason both of those are true: this signature
+    describes what the wrapper does, not what the body does.
     """
     kept = [p for name, p in original.parameters.items() if name != "subject"]
     var_keyword = [p for p in kept if p.kind is inspect.Parameter.VAR_KEYWORD]
@@ -142,7 +163,10 @@ def _public_signature(original: inspect.Signature) -> inspect.Signature:
         default=None,
         annotation="str | None",
     )
-    return original.replace(parameters=[*positional, approval_param, *var_keyword])
+    return original.replace(
+        parameters=[*positional, approval_param, *var_keyword],
+        return_annotation=_widened_return(original.return_annotation),
+    )
 
 
 def _resource_for(
