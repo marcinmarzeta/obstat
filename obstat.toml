@@ -1,0 +1,34 @@
+# obstat policy. First matching rule wins; nothing matching is a deny.
+#
+# Match on any of `tool`, `subject`, `resource` — glob patterns, all optional,
+# omitted means "*". `effect` is required: allow, deny, or approve.
+#
+#   subject   "human:ana", "agent:planner", "service:etl", "anonymous"
+#   resource  whatever the tool's resource template produces, e.g. "jira_issue:ACME-1"
+
+# Reading is free.
+[[rule]]
+tool = "read_*"
+effect = "allow"
+
+# Anyone may look at their own drafts, nobody else's.
+[[rule]]
+tool = "open_document"
+resource = "doc:draft-*"
+effect = "allow"
+
+# Writes to a real issue need a human to say so.
+[[rule]]
+tool = "transition_issue"
+resource = "jira_issue:*"
+effect = "approve"
+
+# Deleting is never an agent's call to make on its own.
+[[rule]]
+tool = "delete_*"
+subject = "agent:*"
+effect = "deny"
+
+[[rule]]
+tool = "delete_*"
+effect = "approve"

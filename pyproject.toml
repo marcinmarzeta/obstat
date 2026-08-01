@@ -1,0 +1,54 @@
+[project]
+name = "obstat"
+version = "0.1.0"
+description = "An auditable decision record for agent tool calls. The clearance is written down before the call runs."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Marcin Marzęta" }]
+keywords = ["mcp", "agents", "audit", "authorization", "approval", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+]
+
+# Nothing. tomllib, sqlite3, hashlib and json are stdlib, and a governance
+# library that drags in a cloud SDK is one nobody can try on a laptop.
+dependencies = []
+
+[project.optional-dependencies]
+# The decorator is protocol-agnostic; this is only for `examples/server.py`.
+mcp = ["mcp>=1.9"]
+
+[project.scripts]
+obstat = "obstat.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/marcinmarzeta/obstat"
+Issues = "https://github.com/marcinmarzeta/obstat/issues"
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.14"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["obstat"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "G", "RUF"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
