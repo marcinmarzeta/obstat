@@ -23,7 +23,7 @@ dependencies = []
 
 [project.optional-dependencies]
 # The decorator is protocol-agnostic; this is only for `examples/server.py`.
-mcp = ["mcp>=1.9"]
+mcp = ["mcp>=2"]
 
 [project.scripts]
 obstat = "obstat.__main__:main"

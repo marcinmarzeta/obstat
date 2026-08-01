@@ -2,7 +2,7 @@
 
     uv run --with 'obstat[mcp]' examples/server.py
 
-`@mcp.tool()` goes outside `@guard(...)`, so what FastMCP advertises is the
+`@mcp.tool()` goes outside `@guard(...)`, so what the server advertises is the
 guarded signature: no `subject`, plus an optional `obstat_approval_id`.
 
 The policy this reads is `obstat.toml` in the working directory.
@@ -10,11 +10,11 @@ The policy this reads is `obstat.toml` in the working directory.
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from obstat import Subject, guard, set_subject_resolver
 
-mcp = FastMCP("documents")
+mcp = MCPServer("documents")
 
 # Where identity comes from is the host application's business. Over stdio there
 # is usually none, and None is a valid answer — the call is recorded as
