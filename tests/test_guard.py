@@ -109,6 +109,42 @@ def test_a_caller_cannot_supply_its_own_subject(workspace):
     assert record.read()[-1]["reason"] == "caller supplied a subject"
 
 
+def test_a_subject_that_would_collide_is_refused_at_decoration():
+    # A `doc_id` after `subject` would be filled from the caller's first positional
+    # argument, because the advertised signature no longer has `subject` in it.
+    with pytest.raises(TypeError, match="keyword"):
+
+        @guard()
+        def wrong(subject: Subject | None, doc_id: str) -> str:  # pragma: no cover
+            raise AssertionError("decorating this should have failed")
+
+    # Last, or keyword-only: nothing positional follows, so neither can collide.
+    @guard()
+    def trailing(doc_id: str, subject: Subject | None = None) -> str:  # pragma: no cover
+        return doc_id
+
+    @guard()
+    def keyword_only(doc_id: str, *, subject: Subject | None = None) -> str:  # pragma: no cover
+        return doc_id
+
+
+def test_a_delegation_chain_reaches_the_record(workspace):
+    workspace(ALLOW_ALL)
+    set_subject_resolver(lambda: Subject(id="planner", kind="agent", via=("human:ana",)))
+
+    @guard()
+    def act() -> str:
+        return "done"
+
+    act()
+    set_subject_resolver(lambda: Subject(id="planner", kind="agent"))
+    act()
+
+    delegated, direct = [e for e in record.read() if e["phase"] == "decision"]
+    assert delegated["via"] == ["human:ana"]
+    assert "via" not in direct  # omitted rather than empty
+
+
 def test_injected_subject_is_not_advertised_but_the_approval_id_is(workspace):
     workspace(ALLOW_ALL)
 

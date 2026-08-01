@@ -26,6 +26,12 @@ from . import approval, paths, policy, record
 ANONYMOUS = policy.ANONYMOUS
 APPROVAL_ARG = "obstat_approval_id"
 
+_BY_POSITION = (
+    inspect.Parameter.POSITIONAL_ONLY,
+    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+    inspect.Parameter.VAR_POSITIONAL,
+)
+
 
 class Denied(Exception):
     """Refused. Carries the record id and nothing else.
@@ -120,14 +126,13 @@ class _Checked:
     approval_id: str | None
 
 
-def _public_signature(fn: Callable[..., Any]) -> inspect.Signature:
+def _public_signature(original: inspect.Signature) -> inspect.Signature:
     """The signature callers see: `subject` removed, `obstat_approval_id` added.
 
     `subject` is injected by obstat, so leaving it in the advertised schema would
     invite a client to supply its own. The approval id is the opposite — the
     retry protocol needs the caller to send it, so it has to be advertised.
     """
-    original = inspect.signature(fn)
     kept = [p for name, p in original.parameters.items() if name != "subject"]
     var_keyword = [p for p in kept if p.kind is inspect.Parameter.VAR_KEYWORD]
     positional = [p for p in kept if p.kind is not inspect.Parameter.VAR_KEYWORD]
@@ -168,8 +173,25 @@ def guard(
 
     def decorate(fn: Callable[..., Any]) -> Callable[..., Any]:
         name = tool or fn.__name__
-        wants_subject = "subject" in inspect.signature(fn).parameters
-        public = _public_signature(fn)
+        original = inspect.signature(fn)
+        params = list(original.parameters.values())
+        wants_subject = "subject" in original.parameters
+        if wants_subject:
+            # `subject` is injected by keyword while positional arguments pass
+            # through unchanged, so a parameter fillable by position after it would
+            # receive the caller's value for something else (§4.1). Raised at
+            # decoration rather than at call time, where the `allow` record is
+            # already on disk and the failure reads as a call that broke after
+            # being authorised.
+            after = params[[p.name for p in params].index("subject") + 1 :]
+            if original.parameters["subject"].kind is inspect.Parameter.POSITIONAL_ONLY or any(
+                p.kind in _BY_POSITION for p in after
+            ):
+                raise TypeError(
+                    f"{name}: obstat injects `subject` by keyword, so it must come last "
+                    "or be keyword-only (`*, subject: Subject | None = None`)"
+                )
+        public = _public_signature(original)
         # Arguments are bound against the public signature minus the approval id,
         # so the digest covers what the tool will actually receive and nothing else.
         bind_against = public.replace(
@@ -293,6 +315,13 @@ def guard(
         def authorise(args: tuple, kwargs: dict) -> tuple[str, dict]:
             """Steps 1-6. Returns the record id and the kwargs the body will get."""
             checked = check(args, kwargs)
+            extra: dict[str, Any] = {
+                "subject_verified": bool(checked.subject and checked.subject.verified)
+            }
+            # Omitted rather than empty (§6): a field on every record of every
+            # deployment that never delegates is noise in the thing being read.
+            if checked.subject and checked.subject.via:
+                extra["via"] = list(checked.subject.via)
             record_id = record.decision(
                 tool=name,
                 subject=checked.subject_name,
@@ -302,7 +331,7 @@ def guard(
                 rule=checked.verdict.rule,
                 args_digest=checked.args_digest,
                 approval_id=checked.approval_id,
-                extra={"subject_verified": bool(checked.subject and checked.subject.verified)},
+                extra=extra,
             )
             if wants_subject:
                 kwargs = {**kwargs, "subject": checked.subject}

@@ -9,3 +9,6 @@ build/
 
 # obstat's own working files: a decision record is per-deployment, never committed.
 .obstat/
+
+# IDE config: per-developer, not per-project.
+.idea/

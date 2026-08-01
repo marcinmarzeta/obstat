@@ -27,7 +27,7 @@ class Subject:
 |---|---|
 | `id` | opaque, whatever the host calls this principal |
 | `kind` | what sort of thing it is; policy can match on it |
-| `via` | delegation chain, most recent first — who asked this principal to act |
+| `via` | delegation chain, most recent first — who asked this principal to act; recorded when non-empty (§6) |
 | `verified` | whether the host authenticated it, or merely received a claim |
 
 `str(subject)` is `"{kind}:{id}"`, and that string is what policy matches and what
@@ -147,7 +147,10 @@ Normative. Each step's failure is terminal.
 | 8 | Write the outcome record, best effort | — never denies |
 
 **Step 6 before step 7 is the whole point.** `record.decision()` returns only
-after `write`, `flush` and `fsync`. If the process dies between 6 and 7, the
+after `write` and `fsync` — and, on the write that creates the log file, an
+`fsync` of the containing directory too, since a synced file whose directory
+entry is not synced can survive a crash with nothing pointing at it. If the
+process dies between 6 and 7, the
 record says `allow` and no outcome follows, which reads as "authorised, did not
 complete" — a state an examiner can act on. The reverse ordering produces
 "executed, no idea whether it was allowed", which is the state that costs an
@@ -220,6 +223,19 @@ to prevent — so this is a known weakness, listed in §8, not a settled design.
 Declare a `subject` parameter and obstat passes the resolved `Subject` (or
 `None`). Omit it and nothing is injected. Either way the parameter is stripped
 from the advertised signature.
+
+It must be **keyword-only, or the last parameter**:
+
+```python
+def delete_document(doc_id: str, *, subject: Subject | None = None) -> str: ...
+```
+
+obstat injects it by keyword and passes the caller's positional arguments
+through unchanged, against a signature that no longer contains `subject` — so
+any parameter fillable by position *after* `subject` would receive the caller's
+value for something else. `@guard` raises `TypeError` at decoration rather than
+at call time, because at call time the `allow` record is already on disk and the
+failure reads as a call that was authorised and then broke.
 
 ### 4.2 The advertised signature
 
@@ -346,7 +362,9 @@ implement it. §8.
 ## 6. The decision record
 
 JSONL, one object per line, appended with `O_APPEND` so concurrent writers
-interleave records but never split one.
+interleave records but never split one. Each record is a single unbuffered
+`write()`, which is what makes that true — a buffered text write splits anything
+past its buffer into several syscalls, and only one syscall is atomic.
 
 ```json
 {"schema": 1,
@@ -366,6 +384,11 @@ interleave records but never split one.
 
 `effect` is one of `allow`, `deny`, `approval_required`. `rule` is the index into
 the policy file, so a record points at the line that decided it.
+
+`via` (§1) is present on an `allow` record only when the subject carries a
+delegation chain: `"via": ["human:ana"]`. It is omitted rather than written empty,
+because `"via": []` on every record of every deployment that never delegates is
+noise in the thing an examiner has to read.
 
 ### 6.1 Arguments are fingerprinted, not stored
 
@@ -444,6 +467,8 @@ implementation of them.
 | nothing matching denies | `test_no_rule_is_a_deny` |
 | a missing policy is not an implicit allow | `test_missing_policy_is_not_an_implicit_allow` |
 | a caller cannot name itself | `test_a_caller_cannot_supply_its_own_subject` |
+| a colliding `subject` parameter is refused at decoration | `test_a_subject_that_would_collide_is_refused_at_decoration` |
+| a delegation chain reaches the record | `test_a_delegation_chain_reaches_the_record` |
 | `subject` unadvertised, approval id advertised | `test_injected_subject_is_not_advertised…` |
 | the resource comes from the arguments | `test_resource_comes_from_the_arguments` |
 | an unresolvable resource denies | `test_an_unresolvable_resource_denies` |

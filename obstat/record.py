@@ -40,14 +40,30 @@ def digest(args: dict[str, Any]) -> str:
 def _append(entry: dict[str, Any], *, durable: bool) -> None:
     path = paths.log()
     path.parent.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(entry, separators=(",", ":"), default=str) + "\n"
-    # Append mode, one write, one line: concurrent writers interleave records but
-    # never split one. O_APPEND makes the offset kernel-side, so no lock is needed.
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(line)
+    line = (json.dumps(entry, separators=(",", ":"), default=str) + "\n").encode("utf-8")
+    created = not path.exists()
+    # One record, one write() syscall: concurrent writers interleave records but
+    # never split one, and O_APPEND keeps the offset kernel-side so no lock is
+    # needed. Unbuffered because a buffered text write splits a record larger than
+    # its buffer across several syscalls, and only one syscall is atomic — record
+    # size is caller-influenced, since resource ids are built from the arguments.
+    with path.open("ab", buffering=0) as handle:
+        view = memoryview(line)
+        while view:
+            # In practice a short write means the disk filled. Finishing the line
+            # surfaces that as OSError instead of leaving half a record behind.
+            view = view[handle.write(view) :]
         if durable:
-            handle.flush()
             os.fsync(handle.fileno())
+    if durable and created:
+        # fsync on the file does not make its directory entry durable, so the very
+        # first record could survive as data with nothing pointing at it. Only the
+        # write that creates the log needs this; every later one reuses the entry.
+        dir_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
 
 def decision(
