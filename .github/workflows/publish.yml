@@ -17,7 +17,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9
+      # actions/* float on their major tag; setup-uv stopped publishing one
+      # after v7, so it is pinned exactly.
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: "3.12"
       # The tag is the release, so the tests that gate main gate this too. A

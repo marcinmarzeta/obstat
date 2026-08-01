@@ -20,7 +20,9 @@ jobs:
             python: "3.12"
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9
+      # actions/* float on their major tag; setup-uv stopped publishing one
+      # after v7, so it is pinned exactly.
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           python-version: ${{ matrix.python }}
       - run: uv sync --all-extras
