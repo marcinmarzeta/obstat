@@ -26,6 +26,11 @@ is still weak.
 
 ## 60 seconds
 
+```console
+$ obstat init
+wrote obstat.toml — everything is denied until you uncomment a rule
+```
+
 `obstat.toml`:
 
 ```toml
@@ -176,6 +181,8 @@ reads "authorised, outcome unknown", which is the honest state; paying for a sec
 ## Operator commands
 
 ```console
+obstat init                 # a starter policy; refuses to overwrite one
+obstat check <tool> [res]   # what the policy would decide, without a call
 obstat pending              # approvals waiting on a human
 obstat approve <id> [--by]  # decide
 obstat deny <id> [--by]
@@ -187,6 +194,10 @@ obstat resume
 
 `obstat stop` is checked before policy, so stopping never depends on the policy
 file still being parseable.
+
+`obstat check` exits 0 for an allow and 1 for anything else, so a policy can be
+tested in CI — and a policy that does not parse is reported there rather than by
+the next real call.
 
 ## What is not here yet
 

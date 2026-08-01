@@ -1,5 +1,7 @@
 """`obstat` — the operator's side: what is waiting, and what happened.
 
+obstat init
+obstat check <tool> [resource] [--subject]
 obstat pending
 obstat approve <id>
 obstat deny <id>
@@ -16,7 +18,72 @@ import json
 import sys
 import time
 
-from . import approval, paths, record
+from . import approval, paths, policy, record
+
+# `obstat.guard` the name is the decorator, so the module's own default resource
+# has to be reached directly.
+from .guard import _resource_for
+
+# Every rule commented out and one live deny (§2.3). A starter policy that grants
+# something is a starter policy somebody ships unread, and the rules here are
+# shapes to copy rather than defaults to inherit.
+_STARTER = """\
+# obstat policy. Rules are tried in file order, the first match wins, and
+# nothing matching is a deny — so this file permits nothing until you edit it.
+# It is re-read when it changes; no restart.
+
+# Tools whose name begins with read_ may run without asking.
+# [[rule]]
+# tool = "read_*"
+# effect = "allow"
+
+# Deleting waits for a human: `obstat pending`, then `obstat approve <id>`.
+# [[rule]]
+# tool = "delete_*"
+# effect = "approve"
+
+# One principal, one family of resources. `subject` is "kind:id", or "anonymous".
+# [[rule]]
+# subject = "human:ana"
+# resource = "jira_issue:ACME-*"
+# effect = "allow"
+
+# Deny the rest out loud. An absent rule denies too, but this puts a rule number
+# in the record, which reads as a decision rather than as an omission.
+[[rule]]
+effect = "deny"
+"""
+
+
+def _init(_: argparse.Namespace) -> int:
+    path = paths.policy()
+    if path.exists():
+        # Never clobber a policy. The file this would overwrite is the only thing
+        # standing between an agent and every guarded tool.
+        print(f"{path} already exists, leaving it alone", file=sys.stderr)
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_STARTER, encoding="utf-8")
+    # Resolved, because the default path is relative to the working directory and
+    # a policy written beside the wrong one is the quietest way to edit nothing.
+    print(f"wrote {path.resolve()} — everything is denied until you uncomment a rule")
+    return 0
+
+
+def _check(args: argparse.Namespace) -> int:
+    """What the policy would decide, without a call to make it decide it (§2.3)."""
+    # Through the guard's own resolver, so the default cannot drift from §3.3 and
+    # leave `check` answering about a resource no call would ever produce.
+    resource = args.resource or _resource_for(None, args.tool, {})
+    try:
+        verdict = policy.decide(tool=args.tool, subject=args.subject, resource=resource)
+    except policy.PolicyError as exc:
+        # The reason this reads a file at all: a typo'd key or broken TOML is
+        # otherwise found by the next real call, in front of a real agent.
+        print(exc, file=sys.stderr)
+        return 1
+    print(f"{verdict.effect} ({verdict.reason})  {args.tool}  {args.subject}  {resource}")
+    return 0 if verdict.effect == "allow" else 1
 
 
 def _pending(_: argparse.Namespace) -> int:
@@ -72,6 +139,14 @@ def _resume(_: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="obstat", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
+
+    sub.add_parser("init", help="write a starter policy file").set_defaults(run=_init)
+
+    check = sub.add_parser("check", help="what the policy would decide, without calling anything")
+    check.add_argument("tool")
+    check.add_argument("resource", nargs="?", help="default: tool:<tool>, as @guard uses")
+    check.add_argument("--subject", default=policy.ANONYMOUS, help="default: anonymous")
+    check.set_defaults(run=_check)
 
     sub.add_parser("pending", help="approvals waiting on a human").set_defaults(run=_pending)
 

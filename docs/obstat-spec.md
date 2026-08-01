@@ -109,6 +109,28 @@ effect on the next call rather than the next restart. The cost is one `stat()`
 per call, which is cheaper than the class of incident where someone tightened a
 rule, saw no change, and concluded the tightening was wrong.
 
+### 2.3 Writing one, and asking what it would do
+
+```console
+obstat init                                    # a starter obstat.toml
+obstat check delete_document doc:q3-report     # deny (rule 0)
+obstat check read_doc --subject human:ana      # allow (rule 1)
+```
+
+`init` writes every rule commented out and one live `deny`, so a policy nobody
+finished editing permits nothing. It refuses to overwrite an existing file: that
+file is the only thing standing between an agent and every guarded tool.
+
+`check` evaluates §2 against the file on disk and prints the effect with the rule
+that produced it. The resource argument is optional and defaults to
+`tool:<name>`, the same default §3.3 applies. Exit status is 0 for `allow` and 1
+for anything else, including a policy that does not parse — which is otherwise
+discovered by the next real call, in front of a real agent.
+
+It writes no record, resolves no resource and touches no approval. It answers
+what the policy *would* say, which is the question §2.2's reload leaves a reader
+unable to ask.
+
 ---
 
 ## 3. `@guard`
@@ -553,14 +575,6 @@ against the operator.
 
 **The stop file is all-or-nothing.** §3.4.
 
-**Nothing helps you write or test a policy.** A missing file raises `PolicyError`
-on the first guarded call and points at a README (§2.1); a malformed one is
-discovered the same way, in production, by a real call. No command writes a
-starting policy, and none answers what a policy would decide for a given tool,
-subject and resource without making the call. §2.2 re-reads on change because
-operators do not trust that an edit took effect — and then gives them no way to
-look.
-
 **The approval TTL is fixed.** 900 seconds, a module constant, absent from §7
 while every path beside it is configurable. A request raised after hours expires
 unanswered, and §5.3 is explicit that expiry denies.
@@ -588,10 +602,14 @@ adapters, not dependencies.
 ## 9. Required tests
 
 These encode the claims above; `tests/test_guard.py` is the current
-implementation of them.
+implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 
 | Property | Test |
 |---|---|
+| a starter policy parses and permits nothing | `test_init_writes_a_policy_that_permits_nothing` |
+| `init` does not overwrite a policy | `test_init_will_not_overwrite_a_policy` |
+| `check` names the rule that decided | `test_check_names_the_rule_that_decided` |
+| a broken policy is reported, not raised | `test_check_reports_a_broken_policy_instead_of_raising` |
 | the record is durable before the body runs | reads the log from inside the body and asserts its own decision is already there |
 | an outcome follows a decision, sharing its id | `test_outcome_is_recorded_after` |
 | a failing body still leaves both records | `test_a_failing_body_still_leaves_both_records` |
