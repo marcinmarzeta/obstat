@@ -7,7 +7,7 @@ that weakens that ordering is a bug, not an optimisation.
 ## Commands
 
 ```bash
-uv run pytest -q          # 26 tests, ~0.3s
+uv run pytest -q          # 39 tests, ~0.3s
 uv run ruff check .
 uv run ruff format .
 ```
@@ -44,9 +44,20 @@ when the spec is renumbered.
 uploads via PyPI trusted publishing (OIDC — there is no token anywhere). **A PyPI
 version is immutable**: a bad build can be superseded, never withdrawn.
 
-## Gotcha
+## Gotchas
 
 `uv run --with /path/to/obstat` serves a **cached wheel** and will happily run
 code you edited minutes ago as if you hadn't. `--reinstall-package` does not
 dislodge it; `--refresh` does. Two verification runs were wasted on this — if a
-local install seems to ignore your change, that is why.
+local install seems to ignore your change, that is why. To exercise uncommitted
+work, `--with-editable` sidesteps the question entirely.
+
+**PyPI lags its own publish.** Minutes after `publish.yml` goes green,
+`uv pip install obstat==X` can still fail with *"there is no version of
+obstat==X"* while `https://pypi.org/pypi/obstat/json` reports X as latest — or
+the reverse; 0.2.0 and 0.3.0 each showed one. It cleared inside a minute both
+times. The symptom impersonates a failed upload, and every tempting response
+(re-tag, re-run, `force`) is wrong, one of them irreversibly. **The publish job
+log is authoritative**: it prints the `https://pypi.org/project/obstat/X/` that
+upload.pythonhosted.org returned, which means the file was accepted. Poll the
+install until it succeeds rather than diagnosing it.
