@@ -200,4 +200,4 @@ you cannot try.
 
 ## License
 
-Apache-2.0.
+Apache-2.0. Copyright 2026 Marcin Marzęta.

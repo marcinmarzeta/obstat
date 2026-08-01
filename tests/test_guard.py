@@ -229,6 +229,56 @@ class TestApproval:
             transition("ACME-1", to="Deleted", obstat_approval_id=approval_id)
         assert "different args_digest" in record.read()[-1]["reason"]
 
+    def test_asking_twice_rejoins_one_approval(self, workspace):
+        workspace(self.POLICY)
+        transition = self.tool()
+
+        first = transition("ACME-1", to="Done")
+        second = transition("ACME-1", to="Done")
+
+        # Same call, same approval. An agent polling a slow human must not queue
+        # up duplicates for that human to sort out.
+        assert first["approval_id"] == second["approval_id"]
+        assert first["waiting"] is False
+        assert second["waiting"] is True
+        assert len(approval_module.pending()) == 1
+
+        # A different call is a different approval.
+        other = transition("ACME-2", to="Done")
+        assert other["approval_id"] != first["approval_id"]
+        assert len(approval_module.pending()) == 2
+
+    def test_retrying_before_a_human_answers_is_not_a_denial(self, workspace):
+        workspace(self.POLICY)
+        transition = self.tool()
+        approval_id = transition("ACME-1", to="Done")["approval_id"]
+
+        again = transition("ACME-1", to="Done", obstat_approval_id=approval_id)
+
+        assert again["obstat"] == "approval_required"
+        assert again["approval_id"] == approval_id
+        assert again["waiting"] is True
+        assert len(approval_module.pending()) == 1
+
+    def test_the_same_call_can_be_approved_again_later(self, workspace):
+        workspace(self.POLICY)
+        transition = self.tool()
+
+        first = transition("ACME-1", to="Done")["approval_id"]
+        approval_module.resolve(first, approved=True, by="ana")
+        transition("ACME-1", to="Done", obstat_approval_id=first)
+
+        # Consumed. Asking again opens a fresh approval under the same derived id,
+        # because doing the same thing twice on purpose is not a replay.
+        second = transition("ACME-1", to="Done")
+        assert second["obstat"] == "approval_required"
+        assert second["approval_id"] == first
+        assert second["waiting"] is False
+        assert len(approval_module.pending()) == 1
+
+        approval_module.resolve(second["approval_id"], approved=True, by="ana")
+        assert transition("ACME-1", to="Done", obstat_approval_id=first) == "ACME-1 -> Done"
+
     def test_a_denied_approval_denies(self, workspace):
         workspace(self.POLICY)
         transition = self.tool()

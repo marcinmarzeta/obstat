@@ -226,7 +226,7 @@ from the advertised signature.
 The wrapper's `__signature__` is the wrapped function's, minus `subject`, plus:
 
 ```python
-obstat_approval_id: str | None = None   # keyword-only
+obstat_approval_id: str | None = None  # keyword-only
 ```
 
 MCP servers generate their tool schema from that signature, so a client sees the
@@ -243,23 +243,40 @@ across two tool calls, and the agent is never left waiting on a person.
 
 ### 5.1 Phase 1 — request
 
-Policy said `approve` and no approval id was supplied. obstat:
+Policy said `approve` and no usable approval was supplied. obstat:
 
-1. Writes a decision record with `effect: "approval_required"`.
-2. Inserts a `pending` row bound to `(tool, subject, resource, args_digest)`,
-   with `expires = now + 900s`.
-3. Returns — **does not raise** — this value:
+1. Derives the approval id: `sha256(tool | subject | resource | args_digest)[:12]`.
+2. Writes a decision record with `effect: "approval_required"`, naming that id.
+3. Inserts a `pending` row bound to `(tool, subject, resource, args_digest)` with
+   `expires = now + 900s` — **or rejoins** the row already there, if one is still
+   `pending` or `approved` and unexpired.
+4. Returns — **does not raise** — this value:
 
 ```python
-{"obstat": "approval_required",
- "approval_id": "d41b88f29a43",
- "expires_in_seconds": 900,
- "record": "814e0978bd10…",
- "retry": "A human must approve this call. …"}
+{
+    "obstat": "approval_required",
+    "approval_id": "d41b88f29a43",
+    "expires_in_seconds": 900,
+    "record": "814e0978bd10…",
+    "waiting": False,
+    "retry": "A human must approve this call. …",
+}
 ```
 
 A return rather than an error, so the agent can reason about it and tell the user
 what it is waiting for instead of treating a working control as a failure.
+`waiting` is `True` when this rejoined an existing request, which is how an agent
+distinguishes "asked" from "asked again".
+
+**The id is derived, not invented.** A random id would mean every retry opens
+another approval, so an agent polling a slow human produces a queue of identical
+requests for that human to sort out — and the pile-up is worst exactly when
+someone is already too busy to answer. Deriving it from the call makes a retry
+rejoin the request already waiting.
+
+A row that is terminal (`consumed`, `denied`) or expired is *replaced* rather
+than rejoined. The same call made twice on purpose is not a replay, and must be
+able to get its own approval.
 
 ### 5.2 Phase 2 — retry
 
@@ -291,21 +308,27 @@ pending ──approve──► approved ──use──► consumed
 
 | state at retry | result | reason recorded |
 |---|---|---|
+| binding mismatch | deny | `approval was granted for a different {field}` |
 | absent | deny | `unknown approval` |
-| `pending` | deny | `approval is pending` |
+| `pending` | **§5.1 payload again** | `approval_required` |
 | `denied` | deny | `approval is denied` |
 | `consumed` | deny | `approval already used` |
-| `approved`, past `expires` | deny | `approval expired` |
-| `approved`, binding mismatch | deny | `approval was granted for a different {field}` |
+| past `expires` | deny | `approval expired` |
 | `approved`, all checks pass | allow | — |
+
+The binding check runs **before** anything is said about state, so a caller
+holding someone else's id learns that it does not match this call rather than
+what is happening to that approval.
 
 Expiry is not a state; it is `expires < now` evaluated at use, and `obstat
 pending` hides rows past it. **A TTL elapsing denies** — never approve on
 timeout.
 
-`approval is pending` being a hard deny is a **known divergence from Airlock**,
-which returns the phase-1 payload again so that an agent polling ahead of a slow
-human is not told "do not retry". See §8.
+A retry against a `pending` approval is not a denial. It returns §5.1's payload
+with `waiting: True`, because telling an agent "do not retry" while the
+notification is still on somebody's phone turns a slow approver into a failed
+call and makes the eventual approval worthless. `denied`, `consumed` and expired
+remain hard denials.
 
 ### 5.4 Who approves
 
@@ -387,13 +410,6 @@ is a library nobody can try.
 
 Ranked by how much they weaken the claim in the first paragraph.
 
-**Phase-1 requests are not deduplicated.** Each retry without an approval id
-opens a *new* pending approval, so an agent polling a slow human produces a queue
-of duplicates. Airlock solved this by deriving the approval id deterministically
-from `subject | tool | args`, so a retry rejoins the approval already waiting.
-obstat should do the same, and `pending` should then return the phase-1 payload
-rather than denying (§5.3).
-
 **No approver authority.** §5.4. Anything beyond a single operator needs the
 approver to be authenticated and distinct from the requester.
 
@@ -435,6 +451,9 @@ implementation of them.
 | the stop file denies, and lifting it restores | `test_the_stop_file_denies_everything` |
 | approval is two-phase and does not run early | `TestApproval::test_first_call_asks_and_does_not_run` |
 | approval is single-use | `TestApproval::test_retry_after_approval_runs_once` |
+| asking twice rejoins one approval | `TestApproval::test_asking_twice_rejoins_one_approval` |
+| retrying before a human answers is not a denial | `TestApproval::test_retrying_before_a_human_answers…` |
+| the same call can be approved again later | `TestApproval::test_the_same_call_can_be_approved_again_later` |
 | approval does not travel to another call | `TestApproval::test_an_approval_does_not_travel_to_another_call` |
 | a denied or invented approval denies | `TestApproval::test_a_denied_approval_denies`, `…invented_approval_id…` |
 | async tools take the same path | `test_async_tools_go_through_the_same_gate` |

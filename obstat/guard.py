@@ -47,11 +47,12 @@ class _Pending(Exception):
     it into a return value, because a call that needs a human has not failed.
     """
 
-    def __init__(self, approval_id: str, ttl: int, record_id: str) -> None:
+    def __init__(self, approval_id: str, ttl: int, record_id: str, *, rejoined: bool) -> None:
         super().__init__(approval_id)
         self.approval_id = approval_id
         self.ttl = ttl
         self.record_id = record_id
+        self.rejoined = rejoined
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -59,6 +60,7 @@ class _Pending(Exception):
             "approval_id": self.approval_id,
             "expires_in_seconds": self.ttl,
             "record": self.record_id,
+            "waiting": self.rejoined,  # already asked; nobody has answered yet
             "retry": (
                 "A human must approve this call. Once approved, call the same tool "
                 f"again with identical arguments plus {APPROVAL_ARG}='{self.approval_id}'."
@@ -243,7 +245,29 @@ def guard(
 
             # 5. Approval.
             if verdict.effect == "approve":
-                if approval_id is None:
+                spent = False
+                if approval_id is not None:
+                    ok, why = approval.consume(
+                        approval_id,
+                        tool=name,
+                        subject=subject,
+                        resource=target,
+                        args_digest=args_digest,
+                    )
+                    # A retry that arrives before anyone has answered is not a
+                    # denial. Telling an agent "do not retry" because a human is
+                    # slow turns a working control into a failed call, and makes
+                    # the approval useless by the time it arrives.
+                    if not ok and why != approval.STILL_PENDING:
+                        raise refusal(why, rule=verdict.rule, approval_id=approval_id)
+                    spent = ok
+
+                if not spent:
+                    # Derived from this call, so a retry rejoins the approval
+                    # already waiting rather than opening another one.
+                    wanted = approval.identifier(
+                        tool=name, subject=subject, resource=target, args_digest=args_digest
+                    )
                     record_id = record.decision(
                         tool=name,
                         subject=subject,
@@ -252,24 +276,17 @@ def guard(
                         reason=verdict.reason,
                         rule=verdict.rule,
                         args_digest=args_digest,
+                        approval_id=wanted,
                     )
-                    new_id, ttl = approval.request(
+                    ttl, rejoined = approval.request(
+                        wanted,
                         tool=name,
                         subject=subject,
                         resource=target,
                         args_digest=args_digest,
                         record_id=record_id,
                     )
-                    raise _Pending(new_id, ttl, record_id)
-                ok, why = approval.consume(
-                    approval_id,
-                    tool=name,
-                    subject=subject,
-                    resource=target,
-                    args_digest=args_digest,
-                )
-                if not ok:
-                    raise refusal(why, rule=verdict.rule, approval_id=approval_id)
+                    raise _Pending(wanted, ttl, record_id, rejoined=rejoined)
 
             return _Checked(who, subject, target, args_digest, verdict, approval_id)
 

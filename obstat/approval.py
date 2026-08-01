@@ -15,14 +15,18 @@ must not authorise sending a different one.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import time
-import uuid
 from dataclasses import dataclass
 
 from . import paths
 
 TTL_SECONDS = 900  # 15 minutes: long enough to reach a human, short enough to expire
+
+# A retry that arrives before anyone has answered is not a failure, so `guard`
+# checks for exactly this reason and hands back the phase-1 payload again.
+STILL_PENDING = "approval is pending"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS approvals (
@@ -63,19 +67,63 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def identifier(*, tool: str, subject: str, resource: str, args_digest: str) -> str:
+    """The id for this exact call, derived rather than invented.
+
+    Deterministic so that an agent retrying while a human thinks rejoins the
+    approval already waiting instead of opening another one. A random id turns a
+    slow approver into a queue of duplicates, and whoever is deciding then has to
+    work out which of eight identical requests to press.
+
+    Twelve hex characters: short enough to read out over a call, and the input is
+    not secret, so collision resistance rather than preimage resistance is what
+    is being asked of it.
+    """
+    material = "|".join((tool, subject, resource, args_digest))
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+
+
 def request(
-    *, tool: str, subject: str, resource: str, args_digest: str, record_id: str
-) -> tuple[str, int]:
-    """Open a pending approval. Returns its id and how long it is valid for."""
-    approval_id = uuid.uuid4().hex[:12]  # short enough to read out loud over a call
+    approval_id: str, *, tool: str, subject: str, resource: str, args_digest: str, record_id: str
+) -> tuple[int, bool]:
+    """Open an approval, or rejoin the one this call already has.
+
+    Returns (seconds remaining, rejoined). A row still `pending` or `approved` is
+    reused; anything terminal or expired is replaced, because the same call being
+    made twice legitimately is not the same request.
+    """
     now = time.time()
     with _connect() as conn:
-        conn.execute(
-            "INSERT INTO approvals (id, created, expires, tool, subject, resource,"
-            " args_digest, record_id, state) VALUES (?,?,?,?,?,?,?,?,'pending')",
-            (approval_id, now, now + TTL_SECONDS, tool, subject, resource, args_digest, record_id),
-        )
-    return approval_id, TTL_SECONDS
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = conn.execute(
+                "SELECT state, expires FROM approvals WHERE id=?", (approval_id,)
+            ).fetchone()
+            if row is not None and row["state"] in ("pending", "approved") and row["expires"] > now:
+                conn.execute("COMMIT")
+                return int(row["expires"] - now), True
+            conn.execute(
+                "INSERT INTO approvals (id, created, expires, tool, subject, resource,"
+                " args_digest, record_id, state) VALUES (?,?,?,?,?,?,?,?,'pending')"
+                " ON CONFLICT(id) DO UPDATE SET created=excluded.created,"
+                " expires=excluded.expires, record_id=excluded.record_id,"
+                " state='pending', decided_by=NULL, decided_at=NULL",
+                (
+                    approval_id,
+                    now,
+                    now + TTL_SECONDS,
+                    tool,
+                    subject,
+                    resource,
+                    args_digest,
+                    record_id,
+                ),
+            )
+            conn.execute("COMMIT")
+            return TTL_SECONDS, False
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
 
 
 def resolve(approval_id: str, *, approved: bool, by: str) -> bool:
@@ -104,14 +152,10 @@ def consume(
             row = conn.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone()
             if row is None:
                 return False, "unknown approval"
-            if row["state"] == "consumed":
-                return False, "approval already used"
-            if row["state"] != "approved":
-                return False, f"approval is {row['state']}"
-            if row["expires"] < time.time():
-                return False, "approval expired"
-            # The binding check. Each of these being wrong means the agent is
-            # retrying with an approval granted for a different call.
+            # The binding check comes first. Each of these being wrong means the
+            # agent is retrying with an approval granted for a different call, and
+            # answering that before saying anything about state keeps this from
+            # reporting on approvals the caller has no business asking about.
             for field, actual in (
                 ("tool", tool),
                 ("subject", subject),
@@ -120,6 +164,12 @@ def consume(
             ):
                 if row[field] != actual:
                     return False, f"approval was granted for a different {field}"
+            if row["state"] == "consumed":
+                return False, "approval already used"
+            if row["state"] != "approved":
+                return False, f"approval is {row['state']}"
+            if row["expires"] < time.time():
+                return False, "approval expired"
             conn.execute("UPDATE approvals SET state='consumed' WHERE id=?", (approval_id,))
             conn.execute("COMMIT")
             return True, "approved"
