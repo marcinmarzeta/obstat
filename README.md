@@ -122,6 +122,13 @@ anyone who can write the file can recompute the whole chain — this is
 tamper-evidence, not non-repudiation, and
 [§8](docs/obstat-spec.md#8-still-open) says so in those words.
 
+**And the record covers the gate, not the resource.** Anything reaching the same
+system by another path — its own client, a shell, the credential this process is
+holding — leaves nothing behind, and the log does not read as incomplete. It
+reads as quiet. Absence is evidence only over the calls that came through
+`@guard`, which is a boundary to design your deployment around rather than a bug
+to wait on: it is the first entry in §8.
+
 ## Identity is optional
 
 Most MCP servers today have no token at all: stdio, one local user, or a gateway

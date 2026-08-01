@@ -672,6 +672,33 @@ obstat being broken instead of as a typo.
 
 Ranked by how much they weaken the claim in the first paragraph.
 
+**The record covers the gate, not the resource.** Every guarded call writes its
+decision first, and that is all the log says. A caller that reaches the same
+system by another path — its own client, a shell, the credential the guarded
+process is holding — changes the world and leaves nothing behind, and the log
+does not read as incomplete. It reads as quiet.
+
+This is not a defect to be patched; it is the boundary of what a decorator can
+observe. It is first here because it is the item most likely to be misread: an
+examiner given `decisions.jsonl` will take absence for evidence, and absence is
+evidence only over the calls that came through `@guard`.
+
+Two things follow. **A credential the caller can read is a gate the caller can
+walk past** — if the process holding the mailbox password shares a trust domain
+with something that can open a socket, the tools are a convenience rather than a
+control, and the separation has to come from the host: a different account, a
+sandbox, a session with no shell. The ordinary MCP deployment, where advertised
+tools are the entire surface, is the one obstat is designed for; a coding agent
+with a shell beside it is not.
+
+**And coverage is the control.** An unguarded path is taken by whoever needs it,
+so a question the tool surface cannot answer becomes a hole in the record rather
+than a refusal. Observed: an agent asked for an unread count, found no tool that
+gave one, opened a raw IMAP connection, and answered correctly — leaving the two
+mailboxes' 2,360 unread messages entirely outside the log. Nothing failed. The
+gate simply was not on that path. Guarding a tool per question people actually
+ask does more for the record than any enforcement obstat could add.
+
 **A resource id is caller-controlled text and nothing normalises it.** §3.3. A
 policy written against `jira_issue:SEC-*` says nothing about `sec-1`, and the
 cost of noticing is a denial that silently did not happen. The callable form of
