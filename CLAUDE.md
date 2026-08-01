@@ -1,0 +1,52 @@
+# obstat
+
+An auditable decision record for agent tool calls. The one claim the project
+makes: **the decision is on disk, fsynced, before the tool body runs.** Anything
+that weakens that ordering is a bug, not an optimisation.
+
+## Commands
+
+```bash
+uv run pytest -q          # 20 tests, ~0.2s
+uv run ruff check .
+uv run ruff format .
+```
+
+## Rules that are not negotiable
+
+- **No runtime dependencies.** `tomllib`, `sqlite3`, `hashlib`, `json` are
+  stdlib. `mcp` is an optional extra for `examples/server.py` only. A governance
+  library nobody can try on a laptop is one nobody adopts.
+- **`docs/obstat-spec.md` is normative.** Behaviour changes update the spec in
+  the same commit. Where spec and code disagree, one of them is a bug.
+- **Nothing matching the policy is a deny**, and a missing policy file is an
+  error — never an implicit allow.
+- **Denials reach the caller with a record id and nothing else.** The reason goes
+  to the record. A denial that explains itself teaches a caller what to work
+  around.
+
+## Conventions
+
+Comments say *why*, not what, and name the alternative that was rejected. A
+`ponytail:` comment marks a deliberate shortcut and its upgrade path — those are
+debts, not decoration.
+
+Spec section numbers (`§5.1`) are referenced from docstrings; keep them in step
+when the spec is renumbered.
+
+## Releasing
+
+1. Bump `version` in `pyproject.toml` **and** `__version__` in
+   `obstat/__init__.py` — two places, no single source yet.
+2. `git tag vX.Y.Z && git push --tags`
+
+`.github/workflows/publish.yml` runs the tests against the tag, builds, and
+uploads via PyPI trusted publishing (OIDC — there is no token anywhere). **A PyPI
+version is immutable**: a bad build can be superseded, never withdrawn.
+
+## Gotcha
+
+`uv run --with /path/to/obstat` serves a **cached wheel** and will happily run
+code you edited minutes ago as if you hadn't. `--reinstall-package` does not
+dislodge it; `--refresh` does. Two verification runs were wasted on this — if a
+local install seems to ignore your change, that is why.
