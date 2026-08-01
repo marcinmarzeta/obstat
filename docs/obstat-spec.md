@@ -699,6 +699,30 @@ mailboxes' 2,360 unread messages entirely outside the log. Nothing failed. The
 gate simply was not on that path. Guarding a tool per question people actually
 ask does more for the record than any enforcement obstat could add.
 
+**The record says what was authorised, never what it did.** §6.2 carries `ok` and
+`error`; the return value goes nowhere, and `record_args` (§6.1) covers inputs
+only. Where a tool's arguments name one thing this costs nothing — for
+`delete_message(uid=…)` the input *is* the effect. The moment they describe a
+**set**, the record stops describing the action: a `delete_by_sender` authorised
+against one sender is one record whether it removed one message or ten thousand,
+and the number reaches no one. Observed on a mailbox, where the outcome for a
+bulk delete of 154 messages was the word `true`. The fix is not the result digest
+of §10 — a digest proves what came back, and what is missing is what the call
+touched. It is a way for a tool to contribute fields to its own outcome record,
+under the same rule as `record_args`: the tool names them, obstat does not guess.
+
+**A decision cannot be tied to the policy that produced it.** §6.4 records
+`rule {n}`, an index into a file §2.2 re-reads whenever it changes. Edit the
+policy and every earlier record's reason points somewhere else — the same tool
+and resource recorded `rule 2` before an edit and `rule 0` after, with nothing to
+say the numbering moved. A denial followed by a policy change followed by an
+approval is the ordinary governance cycle, and it is exactly the sequence the log
+cannot reconstruct: the widening is invisible, and so is the fact that a rule
+granted more than the denial had asked about. The fix is cheap — a digest of the
+policy file on every decision record. §2.2 already stats that file on every call,
+so nothing new is read, and "were these two decisions made under the same policy"
+becomes answerable without keeping the file's history.
+
 **A resource id is caller-controlled text and nothing normalises it.** §3.3. A
 policy written against `jira_issue:SEC-*` says nothing about `sec-1`, and the
 cost of noticing is a denial that silently did not happen. The callable form of
