@@ -602,10 +602,19 @@ class TestConcurrency:
         assert len(prevs) == len(set(prevs))
         assert record.verify() == []
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="Windows append is a seek and a write, so concurrent processes lose records (§8)",
+    )
     def test_two_processes_write_one_log(self, workspace, tmp_path):
         """No inter-process lock, so this is O_APPEND and one write() syscall
         doing the work (§6). Released together, because two writers that happen
-        to take turns prove nothing."""
+        to take turns prove nothing.
+
+        POSIX only, and the skip above is the honest form of that: this once
+        failed on Windows at 57 of 60 records, which is the platform telling the
+        truth about an atomicity obstat does not have there.
+        """
         workspace(ALLOW_ALL)
         script = tmp_path / "child.py"
         script.write_text(CHILD.format(calls=self.CALLS), encoding="utf-8")

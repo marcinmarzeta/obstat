@@ -451,6 +451,11 @@ past its buffer into several syscalls, and only one syscall is atomic. Within a
 process one lock covers hashing and appending together (§6.3); across processes
 there is still no lock.
 
+**Across processes this holds on POSIX only.** Windows' append mode is a seek
+followed by a write rather than one atomic operation, so two processes sharing a
+log there can resolve the same offset and one record overwrites another. A single
+process is safe everywhere, because the lock covers it. §8.
+
 A write cut short by a full disk leaves a fragment with no closing newline. The
 next record starts on a fresh line rather than splicing itself onto that
 fragment, so one failed write costs one record instead of two — `obstat verify`
@@ -680,12 +685,22 @@ how long a record must be kept. Rotation has to carry the chain across files as
 well, or every new file begins at `prev: null` and a deletion at the seam is
 indistinguishable from a rollover.
 
-**The directory sync does not happen on Windows.** It opens a directory as a file
-descriptor, which Windows refuses, so there it is skipped rather than performed
-(§3.1) and the guarantee it exists for — that the log's own directory entry
-survives a crash — is unavailable on that platform. The record's `fsync` still
-happens, so this costs the *first* write of a new log file and nothing after it.
-A platform that can open the directory and then fails to sync it still raises.
+**Windows drops records when two processes share a log.** Its append mode is a
+seek followed by a write, not the atomic operation §6 depends on, so concurrent
+processes can resolve the same offset and one record overwrites another —
+measured at 57 of 60 surviving. Nothing reports it, which for an audit log is the
+worst shape a fault can take. A single process is safe there, because the
+in-process lock (§6.3) covers it, and that is the ordinary MCP deployment. The
+fix would be `msvcrt.locking()` around the append; it is not here because that is
+the inter-process lock §6.3 declines to take on the platform that does not need
+it, and no multi-process Windows deployment has asked for it.
+`TestConcurrency::test_two_processes_write_one_log` skips there rather than
+pretending, and CI still runs the rest of the suite on Windows.
+
+Windows also cannot open a directory as a file descriptor, so the directory sync
+in §3.1 is skipped there — the log's own directory entry is not made durable, on
+the write that creates the file. The record's `fsync` still happens. A platform
+that can open the directory and then fails to sync it still raises.
 
 **No egress control.** Nothing asks where a result is allowed to go, which is the
 control that matters for tools that send mail or post to channels.
@@ -719,7 +734,7 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | a removed record is caught | `TestChain::test_a_removed_record_is_caught` |
 | recomputing one hash does not hide the edit | `TestChain::test_a_reused_hash_does_not_hide_an_edit` |
 | a torn line does not swallow the next record | `TestChain::test_a_torn_line_does_not_swallow_the_next_record` |
-| concurrent processes interleave records without splitting one | `TestConcurrency::test_two_processes_write_one_log` |
+| concurrent processes interleave records without splitting one (POSIX) | `TestConcurrency::test_two_processes_write_one_log` |
 | within one process the chain stays a line | `TestConcurrency::test_threads_do_not_split_a_record` |
 | a forked chain verifies | `TestConcurrency::test_a_forked_chain_still_verifies` |
 | `subject` unadvertised, approval id advertised | `test_injected_subject_is_not_advertised…` |
