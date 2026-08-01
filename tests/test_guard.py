@@ -153,6 +153,31 @@ def test_a_subject_that_would_collide_is_refused_at_decoration():
         return doc_id
 
 
+def test_a_subject_that_means_something_else_is_refused_at_decoration():
+    """An email's subject line, which is where this came from: it is stripped
+    from the advertised signature like any other `subject`, so without the check
+    no caller can set it and a `Subject` goes out in the header instead."""
+    with pytest.raises(TypeError, match="Rename yours"):
+
+        @guard()
+        def send_email(to: str, *, subject: str) -> str:  # pragma: no cover
+            raise AssertionError("decorating this should have failed")
+
+    # Fires before the ordering check, so the message names the real problem
+    # rather than advising a move that would make the theft silent.
+    with pytest.raises(TypeError, match="Rename yours"):
+
+        @guard()
+        def positional(to: str, subject: str, body: str) -> str:  # pragma: no cover
+            raise AssertionError("decorating this should have failed")
+
+    # Unannotated is left alone: there is nothing to read intent from, and
+    # refusing would break tools that have declared it that way all along.
+    @guard()
+    def unannotated(doc_id: str, *, subject=None) -> str:  # pragma: no cover
+        return doc_id
+
+
 def test_a_delegation_chain_reaches_the_record(workspace):
     workspace(ALLOW_ALL)
     set_subject_resolver(lambda: Subject(id="planner", kind="agent", via=("human:ana",)))

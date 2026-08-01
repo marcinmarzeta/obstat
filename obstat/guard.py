@@ -207,6 +207,21 @@ def guard(
         params = list(original.parameters.values())
         wants_subject = "subject" in original.parameters
         if wants_subject:
+            # A tool with its own `subject` — an email's subject line being the
+            # obvious one — otherwise loses that parameter without a word: it is
+            # stripped from the advertised signature (§4.2), so no caller can set
+            # it, and a `Subject` arrives in its place. The annotation is the only
+            # statement of intent available, so an unannotated `subject` is left
+            # alone rather than guessed at. A `Subject` imported under another name
+            # reads as a collision here; renaming the parameter is the fix either
+            # way, and the alternative is trusting a name that means two things.
+            declared = original.parameters["subject"].annotation
+            if declared is not inspect.Parameter.empty and "Subject" not in str(declared):
+                raise TypeError(
+                    f"{name}: `subject` is where obstat injects the caller's identity, "
+                    f"so it cannot also be {declared!r}. Rename yours — `subject_line` "
+                    "— or annotate it `Subject | None` to receive the caller."
+                )
             # `subject` is injected by keyword while positional arguments pass
             # through unchanged, so a parameter fillable by position after it would
             # receive the caller's value for something else (§4.1). Raised at

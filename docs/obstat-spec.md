@@ -293,6 +293,23 @@ value for something else. `@guard` raises `TypeError` at decoration rather than
 at call time, because at call time the `allow` record is already on disk and the
 failure reads as a call that was authorised and then broke.
 
+The name is reserved, and a tool that means something else by it is also refused
+at decoration:
+
+```python
+def send_email(to: str, *, subject: str) -> str: ...  # TypeError
+```
+
+An email's subject line is the case this was written for. Without the check the
+parameter is stripped from the advertised signature like any other `subject`, so
+no caller can ever set it and a `Subject` arrives in its place — silently, and
+visible only in the mail that goes out. The annotation decides: anything naming
+`Subject` receives the caller, an unannotated `subject` is left alone rather than
+guessed at, and anything else is the collision.
+
+Reserving a bare word is the flaw underneath this — `obstat_approval_id` is
+namespaced for exactly this reason and `subject` is not. §10 has the rename.
+
 ### 4.2 The advertised signature
 
 The wrapper's `__signature__` is the wrapped function's, minus `subject`, plus:
@@ -800,6 +817,13 @@ something about what came back, and is the groundwork any egress rule needs.
 permitted against policy, recorded as an override, and listed as outstanding
 until somebody signs it off. That it is visible matters more than that it is
 rare.
+
+**`obstat_subject`, and an end to the reserved word.** §4.1 takes the bare name
+`subject` from the tool's own vocabulary, in a library whose other injected
+parameter is called `obstat_approval_id` precisely so it collides with nothing.
+An email tool wanting a subject line is not an edge case. The check that refuses
+the collision is a guard rail on a naming mistake, not a fix for it; the fix is
+the namespaced name, and it breaks every tool that declares `subject` today.
 
 **The record as a format rather than a library.** §6 is language-agnostic. A
 second implementation writing the same lines, verified by the same rules, would
