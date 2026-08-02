@@ -18,8 +18,9 @@ authorised and why.
 pip install obstat
 ```
 
-No dependencies. Not AWS, not an identity provider, not a policy service — the
-decorator, `tomllib`, `sqlite3` and a file.
+No dependencies, Python ≥ 3.11 (that is where `tomllib` joined the stdlib). Not
+AWS, not an identity provider, not a policy service — the decorator, `tomllib`,
+`sqlite3` and a file.
 
 [`docs/obstat-spec.md`](docs/obstat-spec.md) is normative, and its §8 lists what
 is still weak.
@@ -28,7 +29,7 @@ is still weak.
 
 ```console
 $ obstat init
-wrote obstat.toml — everything is denied until you uncomment a rule
+wrote /home/ana/agents/obstat.toml — everything is denied until you uncomment a rule
 ```
 
 `obstat.toml`:
@@ -43,7 +44,7 @@ tool = "delete_*"
 effect = "approve"
 ```
 
-Your tool:
+Your tool (`async def` works the same):
 
 ```python
 from obstat import guard
@@ -58,31 +59,58 @@ First call returns instead of running:
 ```python
 >>> delete_document("q3-report")
 {'obstat': 'approval_required',
- 'approval_id': '4f1c2a9b8e07',
+ 'approval_id': '1d415a03eef9',
  'expires_in_seconds': 900,
- 'record': '814e0978bd10…',
+ 'record': 'fe74efc7a5cd…',
  'waiting': False,
  'retry': "A human must approve this call. Once approved, call the same tool
-           again with identical arguments plus obstat_approval_id='4f1c2a9b8e07'."}
+           again with identical arguments plus obstat_approval_id='1d415a03eef9'."}
 ```
 
 A human decides:
 
 ```console
 $ obstat pending
-4f1c2a9b8e07  delete_document  anonymous  doc:q3-report  871s left
-$ obstat approve 4f1c2a9b8e07
-4f1c2a9b8e07 approved by ana
+1d415a03eef9  delete_document  anonymous  doc:q3-report  871s left
+$ obstat approve 1d415a03eef9
+1d415a03eef9 approved by ana
 ```
 
-The agent retries with the id, the call runs, and `.obstat/decisions.jsonl` holds
-the whole story.
+The agent retries with the id, the call runs — and this is the product, one line
+in `.obstat/decisions.jsonl` (digests shortened here, real otherwise):
+
+```json
+{"schema": 6,
+ "id": "2216c19533ec49619a324147d9e46614",
+ "ts": 1785683369.215668,
+ "phase": "decision",
+ "tool": "delete_document",
+ "subject": "anonymous",
+ "resource": "doc:q3-report",
+ "effect": "allow",
+ "code": "rule_matched",
+ "reason": "rule 1",
+ "rule": 1,
+ "args": "sha256:ae32e699…",
+ "approval_id": "1d415a03eef9",
+ "policy": "sha256:49bfa9f3…",
+ "subject_verified": false,
+ "approved_by": "ana",
+ "prev": "sha256:47a358d0…",
+ "hash": "sha256:c1c3cf1b…"}
+```
+
+Which rule decided, a digest of the exact policy file that rule number indexes
+into, the approval it spent and who granted it, a fingerprint of the arguments,
+and the hash of the record before it. Each field is there because an examiner
+asks for it.
 
 ## What it is not
 
 There are several good libraries that gate MCP tool calls. This one is built
-around a narrower claim: **the record is the product.** Four things follow from
-that, and they are the reason to pick this over a permission wrapper.
+around a narrower claim: **the record is the product.** Five things follow from
+that — four are the reason to pick this over a permission wrapper, and the fifth
+is the boundary they come with.
 
 **The decision is durable before the body runs.** Not flushed after, not written
 in a `finally`, not batched. `record.decision()` returns only after `fsync`. A log
@@ -109,7 +137,8 @@ effect = "allow"
 resource and a digest of the arguments, and it is single-use. Approving "delete
 q3-report" cannot be spent on deleting something else, and cannot be spent twice.
 This is enforced in one `BEGIN IMMEDIATE` transaction, so two concurrent retries
-cannot both win.
+cannot both win. The record that spends it names who approved, because "who said
+yes" should not live only in a mutable SQLite row.
 
 **The record says when it has been edited.** Every record carries the hash of the
 one before it, and `obstat verify` recomputes the chain:
