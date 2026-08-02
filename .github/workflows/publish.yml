@@ -38,10 +38,18 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
-      id-token: write # the OIDC token PyPI checks; nothing else is needed
+      id-token: write # the OIDC token PyPI checks
+      contents: write # gh release create
     steps:
       - uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
+      # After the upload, so a failed publish leaves no release pointing at a
+      # version PyPI never got. v0.2.0–v0.5.0 were tags with no release because
+      # nothing did this; the generated notes are a floor — edit the release
+      # afterwards for the hand-written kind v0.1.1 set the style for.
+      - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
