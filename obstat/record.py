@@ -27,7 +27,7 @@ from typing import Any
 
 from . import paths
 
-SCHEMA = 5
+SCHEMA = 6
 
 # What the running tool body has asked to have recorded about what it did (§6.2).
 # A ContextVar rather than a thread local, so an async tool nested inside another

@@ -60,6 +60,8 @@ First call returns instead of running:
 {'obstat': 'approval_required',
  'approval_id': '4f1c2a9b8e07',
  'expires_in_seconds': 900,
+ 'record': '814e0978bd10…',
+ 'waiting': False,
  'retry': "A human must approve this call. Once approved, call the same tool
            again with identical arguments plus obstat_approval_id='4f1c2a9b8e07'."}
 ```

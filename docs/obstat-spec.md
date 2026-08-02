@@ -215,9 +215,15 @@ taking them:
 ```
 
 Omitted, the resource is `tool:{name}` — enough when the tool is the only thing
-policy needs to distinguish. A template that raises (`KeyError`, `IndexError`,
-`AttributeError`, `TypeError`) denies with the resource recorded as `unresolved`.
-It never falls back to a wildcard.
+policy needs to distinguish. A template or callable that raises — **anything** —
+denies with the resource recorded as `unresolved` and the exception in the
+reason. It never falls back to a wildcard, and it never lets the exception
+escape unrecorded: the callable is where validation is supposed to live, so what
+it throws is a verdict, not a crash. A callable that refuses two recipients
+where policy assumes one can simply raise, and the failure becomes a recorded
+`resource_unresolved` denial. (0.4.0 and earlier caught only `KeyError`,
+`IndexError`, `AttributeError` and `TypeError`; anything else escaped with no
+record written.)
 
 #### The id is caller-controlled text, matched byte for byte
 
@@ -412,6 +418,11 @@ The check and the state transition to `consumed` happen inside one
 `BEGIN IMMEDIATE` transaction, so two concurrent retries cannot both win.
 **Approvals are single-use.**
 
+The `allow` record written when an approval is spent carries `approved_by` — the
+`decided_by` of §5.4, read from the row inside the transaction that spends it —
+so the chained log answers "who said yes" without a join against a database
+anyone can `UPDATE` (§6).
+
 ### 5.3 State machine
 
 ```
@@ -460,6 +471,11 @@ else. Segregation of duties — that the approver is entitled to approve, and is
 not the requester — is what an ITGC walkthrough tests, and obstat does not
 implement it. §8.
 
+`decided_by` reaches the chained log when the approval is spent: the `allow`
+record carries it as `approved_by` (§5.2, §6). It is still `--by`'s
+self-assertion, and `decided_at` stays in the database only — as does a denial
+nobody retried into the record (§8).
+
 ---
 
 ## 6. The decision record
@@ -482,7 +498,7 @@ fragment, so one failed write costs one record instead of two — `obstat verify
 reports the fragment and everything after it still reads.
 
 ```json
-{"schema": 5,
+{"schema": 6,
  "id": "6430f1a38f8e470a898ca9a116dfb4cc",
  "ts": 1785545412.241792,
  "phase": "decision",
@@ -496,6 +512,7 @@ reports the fragment and everything after it still reads.
  "args": "sha256:ae32e699…",
  "policy": "sha256:7c1d05af…",
  "approval_id": "d41b88f29a43",
+ "approved_by": "ana",
  "subject_verified": false,
  "prev": "sha256:1f0c4b7d…",
  "hash": "sha256:9d2ae410…"}
@@ -506,11 +523,20 @@ the policy file, so a record points at the line that decided it, and `policy`
 identifies *which* file that index is into (§6.4). `prev` and `hash` are the
 chain (§6.3).
 
+`approval_id` names the approval this record opened (`approval_required`), spent
+(`allow`), or refused (a §5.3 deny). Otherwise it is null: an id supplied on a
+call policy allowed outright was never checked against anything, and is dropped
+rather than recorded — a record must not repeat a caller's claim that an
+approval existed, which is §1.2's rule applied to a different field.
+`approved_by` (§5.2) appears only beside a spent approval, omitted otherwise on
+the grounds `via` is.
+
 Schema 2 added `prev` and `hash`; schema 3 added `code`; schema 4 added
 `args_recorded` (§6.1); schema 5 added `policy` and, on outcome records, `noted`
-(§6.2). Records written at schema 1 have no chain fields and verify as
-*unverifiable* rather than as damaged — a log that predates the chain is not
-evidence of tampering.
+(§6.2); schema 6 added `approved_by` and stopped recording unspent approval ids.
+Records written at schema 1 have no chain fields and verify as *unverifiable*
+rather than as damaged — a log that predates the chain is not evidence of
+tampering.
 
 `via` (§1) is present on an `allow` record only when the subject carries a
 delegation chain: `"via": ["human:ana"]`. It is omitted rather than written empty,
@@ -774,6 +800,20 @@ which of its rules describe a namespace that is case-insensitive.
 **No approver authority.** §5.4. Anything beyond a single operator needs the
 approver to be authenticated and distinct from the requester.
 
+**A human's denial reaches the log only when the agent retries.** `obstat deny`
+flips a row in the approvals database; the chained record of that refusal is
+written by the *next* retry (`approval_denied`), and an agent that never comes
+back leaves the log at `approval_required`, with the decision itself only in
+SQLite. The grant has no such gap — spending it writes `approved_by` on the
+allow record (§5.2).
+
+**The approval window runs from the request, not the decision.** `expires` is
+set when the agent asks (§5.1) and never moves, so an approval granted in the
+window's last seconds is dead before the retry can spend it. And `obstat
+approve` does not check expiry at all: it reports success on a request already
+past its window — one `obstat pending` was already hiding — which the retry then
+refuses as `approval_expired`.
+
 **An approver sees only what the tool chose to show.** §6.1 gives a tool
 `record_args`, and `obstat pending` prints it — but a tool that names nothing
 still sends a human a digest and a resource id to decide on. Nothing warns an
@@ -859,6 +899,8 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | a callable resource normalises what policy matches | `test_a_callable_resource_normalises_what_policy_matches` |
 | an unknown effect is refused | `test_an_unknown_effect_is_refused` |
 | an unresolvable resource denies | `test_an_unresolvable_resource_denies` |
+| a raising resource callable denies with a record | `test_a_raising_resource_callable_still_denies_with_a_record` |
+| an unspent approval id is not recorded | `test_an_unspent_approval_id_is_not_recorded` |
 | arguments are fingerprinted, not stored | `test_arguments_are_fingerprinted_not_stored` |
 | only the named arguments are recorded | `test_only_the_named_arguments_are_recorded` |
 | nothing is recorded unless it was named | `test_nothing_is_recorded_unless_it_was_named` |
@@ -873,6 +915,8 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | the same call can be approved again later | `TestApproval::test_the_same_call_can_be_approved_again_later` |
 | approval does not travel to another call | `TestApproval::test_an_approval_does_not_travel_to_another_call` |
 | a denied or invented approval denies | `TestApproval::test_a_denied_approval_denies`, `…invented_approval_id…` |
+| an expired approval denies | `TestApproval::test_an_expired_approval_denies` |
+| the record names who approved | `TestApproval::test_the_record_names_who_approved` |
 | async tools take the same path | `test_async_tools_go_through_the_same_gate` |
 
 ---

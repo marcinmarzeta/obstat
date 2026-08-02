@@ -172,20 +172,22 @@ def resolve(approval_id: str, *, approved: bool, by: str) -> bool:
 
 def consume(
     approval_id: str, *, tool: str, subject: str, resource: str, args_digest: str
-) -> tuple[bool, str, str]:
+) -> tuple[bool, str, str, str | None]:
     """Spend an approval on exactly the call it was granted for.
 
-    Returns (ok, code, reason): the code is the contract, the reason is the prose
-    that goes in the record and carries the detail the code cannot. The check and
-    the state change happen inside one IMMEDIATE transaction, so two concurrent
-    retries cannot both win.
+    Returns (ok, code, reason, decided_by): the code is the contract, the reason
+    is the prose that goes in the record and carries the detail the code cannot,
+    and decided_by — set only on success — is who approved, read from the row
+    inside the transaction that spends it so the allow record can carry it
+    (§6). The check and the state change happen inside one IMMEDIATE
+    transaction, so two concurrent retries cannot both win.
     """
     with _connect() as conn:
         conn.execute("BEGIN IMMEDIATE")
         try:
             row = conn.execute("SELECT * FROM approvals WHERE id=?", (approval_id,)).fetchone()
             if row is None:
-                return False, UNKNOWN, "unknown approval"
+                return False, UNKNOWN, "unknown approval", None
             # The binding check comes first. Each of these being wrong means the
             # agent is retrying with an approval granted for a different call, and
             # answering that before saying anything about state keeps this from
@@ -199,19 +201,19 @@ def consume(
                 if row[field] != actual:
                     # One code, and the prose names which field: an examiner wants
                     # to know it was the resource, a caller is told nothing at all.
-                    return False, MISMATCH, f"approval was granted for a different {field}"
+                    return False, MISMATCH, f"approval was granted for a different {field}", None
             if row["state"] == "consumed":
-                return False, USED, "approval already used"
+                return False, USED, "approval already used", None
             if row["state"] != "approved":
                 code = PENDING if row["state"] == "pending" else DENIED
-                return False, code, f"approval is {row['state']}"
+                return False, code, f"approval is {row['state']}", None
             if row["expires"] < time.time():
-                return False, EXPIRED, "approval expired"
+                return False, EXPIRED, "approval expired", None
             conn.execute("UPDATE approvals SET state='consumed' WHERE id=?", (approval_id,))
             conn.execute("COMMIT")
             # No constant: nothing branches on the code once `ok` is True, and
             # §5.3 records the policy's `rule_matched` on the call that follows.
-            return True, "approval_spent", "approved"
+            return True, "approval_spent", "approved", row["decided_by"]
         except BaseException:
             conn.execute("ROLLBACK")
             raise

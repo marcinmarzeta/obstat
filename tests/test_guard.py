@@ -326,6 +326,25 @@ def test_a_callable_resource_normalises_what_policy_matches(workspace):
     assert {r["resource"] for r in record.read()} == {"jira_issue:SEC-1"}
 
 
+def test_a_raising_resource_callable_still_denies_with_a_record(workspace):
+    """The callable is where §3.3 sends validation, so whatever it raises must
+    become a recorded denial — an unrecorded refusal is half a control."""
+    workspace(ALLOW_ALL)
+
+    def one_recipient(args: dict) -> str:
+        raise ValueError(f"one recipient per call, got {args['to']!r}")
+
+    @guard(resource=one_recipient)
+    def send(to: str) -> str:  # pragma: no cover - must never run
+        raise AssertionError("body ran past a resolver that refused")
+
+    with pytest.raises(Denied):
+        send("evil@evil.com,me@post.pl")
+    written = record.read()[0]
+    assert written["code"] == RESOURCE_UNRESOLVED
+    assert written["resource"] == "unresolved"
+
+
 def test_an_unresolvable_resource_denies(workspace):
     workspace(ALLOW_ALL)
 
@@ -409,6 +428,22 @@ def test_a_denial_records_the_named_arguments(workspace):
     halted = record.read()[-1]
     assert halted["code"] == HALTED
     assert halted["args_recorded"] == {"doc_id": "q4-report"}
+
+
+def test_an_unspent_approval_id_is_not_recorded(workspace):
+    """Policy allowed the call outright, so the id was never checked against
+    anything — recording it would repeat a caller's claim that an approval
+    existed (§6)."""
+    workspace(ALLOW_ALL)
+
+    @guard()
+    def read_thing() -> str:
+        return "ok"
+
+    assert read_thing(obstat_approval_id="forged-or-stale") == "ok"
+    written = record.read()[0]
+    assert written["approval_id"] is None
+    assert "approved_by" not in written
 
 
 def test_the_stop_file_denies_everything(workspace):
@@ -550,6 +585,32 @@ class TestApproval:
 
         approval_module.resolve(second["approval_id"], approved=True, by="ana")
         assert transition("ACME-1", to="Done", obstat_approval_id=first) == "ACME-1 -> Done"
+
+    def test_the_record_names_who_approved(self, workspace):
+        """`decided_by` used to live only in the approvals database, which is
+        the one store here that is not tamper-evident (§5.4)."""
+        workspace(self.POLICY)
+        transition = self.tool()
+        approval_id = transition("ACME-1", to="Done")["approval_id"]
+        approval_module.resolve(approval_id, approved=True, by="ana")
+        transition("ACME-1", to="Done", obstat_approval_id=approval_id)
+
+        allowed = [e for e in record.read() if e.get("effect") == "allow"][-1]
+        assert allowed["approved_by"] == "ana"
+        assert allowed["approval_id"] == approval_id
+
+    def test_an_expired_approval_denies(self, workspace, monkeypatch):
+        """§5.3: a TTL elapsing denies — never approve on timeout."""
+        workspace(self.POLICY)
+        transition = self.tool()
+        approval_id = transition("ACME-1", to="Done")["approval_id"]
+        approval_module.resolve(approval_id, approved=True, by="ana")
+
+        real = time.time
+        monkeypatch.setattr(time, "time", lambda: real() + 1000)
+        with pytest.raises(Denied):
+            transition("ACME-1", to="Done", obstat_approval_id=approval_id)
+        assert record.read()[-1]["code"] == approval_module.EXPIRED
 
     def test_a_denied_approval_denies(self, workspace):
         workspace(self.POLICY)

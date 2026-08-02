@@ -128,7 +128,8 @@ class _Checked:
     args_digest: str
     shown: dict[str, Any]
     verdict: policy.Decision
-    approval_id: str | None
+    approval_id: str | None  # only when actually spent — never a caller's unchecked claim
+    approved_by: str | None
 
 
 def _widened_return(returns: Any) -> Any:
@@ -325,10 +326,12 @@ def guard(
                     HALTED, "halted", subject=subject, args_digest=args_digest, extra=recorded
                 )
 
-            # 3. Resource.
+            # 3. Resource. Everything, not a curated list: the callable is where
+            #    §3.3 sends validation, so what it raises is a verdict to record,
+            #    not a crash to propagate — an unrecorded refusal is half a control.
             try:
                 target = _resource_for(resource, name, call_args)
-            except (KeyError, IndexError, AttributeError, TypeError) as exc:
+            except Exception as exc:
                 raise refuse(
                     RESOURCE_UNRESOLVED,
                     f"resource template did not resolve: {exc!r}",
@@ -352,10 +355,11 @@ def guard(
                 raise refusal(verdict.code, verdict.reason, rule=verdict.rule)
 
             # 5. Approval.
+            spent = False
+            approver: str | None = None
             if verdict.effect == "approve":
-                spent = False
                 if approval_id is not None:
-                    ok, code, why = approval.consume(
+                    ok, code, why, approver = approval.consume(
                         approval_id,
                         tool=name,
                         subject=subject,
@@ -402,7 +406,19 @@ def guard(
                     )
                     raise _Pending(wanted, ttl, record_id, rejoined=rejoined)
 
-            return _Checked(who, subject, target, args_digest, shown, verdict, approval_id)
+            # `approval_id if spent`: on an outright allow the id was never
+            # checked against anything, and recording it would repeat a caller's
+            # claim that an approval existed — §1.2's rule, different field.
+            return _Checked(
+                who,
+                subject,
+                target,
+                args_digest,
+                shown,
+                verdict,
+                approval_id if spent else None,
+                approver,
+            )
 
         def authorise(args: tuple, kwargs: dict) -> tuple[str, dict]:
             """Steps 1-6. Returns the record id and the kwargs the body will get."""
@@ -416,6 +432,10 @@ def guard(
                 extra["via"] = list(checked.subject.via)
             if checked.shown:
                 extra["args_recorded"] = checked.shown
+            # Who said yes, into the chained log — the approvals database also
+            # holds it, but that file is the one store here anyone can UPDATE.
+            if checked.approved_by:
+                extra["approved_by"] = checked.approved_by
             record_id = record.decision(
                 tool=name,
                 subject=checked.subject_name,
