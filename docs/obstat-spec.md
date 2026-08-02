@@ -185,6 +185,19 @@ Step 2 precedes policy so that stopping never depends on the policy file still
 being parseable. Step 1 precedes argument binding so that a forged
 `obstat_subject` cannot reach the record even as a rejected value.
 
+Step 1b binds **fully**: a call missing an argument the tool requires is refused
+here, not authorised and left to fail in the body. Until 0.5.0 it bound
+partially, so such a call took an `allow` record and then raised `TypeError`
+from the body — a record asserting a call was authorised when it could never
+have executed. Defaults are applied after binding, so the digest and
+`args_recorded` cover what the body will actually receive.
+
+A host that validates against the advertised schema first — the MCP SDK does,
+via pydantic — refuses such a call before obstat sees it, and obstat then
+records nothing. That is correct: no body ran, so there is no decision to write.
+It is also why this went unnoticed, and why the check still belongs here. The
+guarantee is obstat's, not the host's.
+
 Denials at every step write a record before raising. A denial nobody can read is
 half a control.
 
@@ -901,6 +914,7 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | an unresolvable resource denies | `test_an_unresolvable_resource_denies` |
 | a raising resource callable denies with a record | `test_a_raising_resource_callable_still_denies_with_a_record` |
 | an unspent approval id is not recorded | `test_an_unspent_approval_id_is_not_recorded` |
+| a call missing an argument is refused, not authorised | `test_a_call_missing_an_argument_is_refused_not_authorised` |
 | arguments are fingerprinted, not stored | `test_arguments_are_fingerprinted_not_stored` |
 | only the named arguments are recorded | `test_only_the_named_arguments_are_recorded` |
 | nothing is recorded unless it was named | `test_nothing_is_recorded_unless_it_was_named` |

@@ -298,15 +298,20 @@ def guard(
             if SUBJECT_ARG in kwargs:
                 raise refuse(SUBJECT_SUPPLIED, "caller supplied a subject")
 
+            # Full bind, not partial: a call missing a required argument cannot
+            # run, and binding it partially wrote `allow` for it and left the
+            # TypeError to the body — a record claiming a call was authorised
+            # when it was never executable. Refused here instead, which is what
+            # §3.1 step 1b says happens.
             try:
-                bound = bind_against.bind_partial(*args, **kwargs)
+                bound = bind_against.bind(*args, **kwargs)
             except TypeError as exc:
                 raise refuse(ARGUMENTS_REJECTED, f"arguments do not fit the tool: {exc}") from exc
             bound.apply_defaults()
             call_args = dict(bound.arguments)
             args_digest = record.digest(call_args)
-            # Only what the tool opted in to (§6.1). Missing from a partial bind
-            # is normal — the argument the caller left out has no value to show.
+            # Only what the tool opted in to (§6.1). `in call_args` still guards
+            # it: a **kwargs parameter is absent until something fills it.
             #
             # ponytail: values go in whole. Cap or elide them if someone
             # allowlists a parameter big enough to matter to a log that fsyncs.

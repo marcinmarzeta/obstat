@@ -22,7 +22,7 @@ from obstat import Denied, Subject, guard, policy, record, set_subject_resolver
 from obstat import approval as approval_module
 
 # `obstat.guard` the name is the decorator, so reach the module's codes directly.
-from obstat.guard import HALTED, RESOURCE_UNRESOLVED, SUBJECT_SUPPLIED
+from obstat.guard import ARGUMENTS_REJECTED, HALTED, RESOURCE_UNRESOLVED, SUBJECT_SUPPLIED
 
 ALLOW_ALL = '[[rule]]\neffect = "allow"\n'
 
@@ -428,6 +428,26 @@ def test_a_denial_records_the_named_arguments(workspace):
     halted = record.read()[-1]
     assert halted["code"] == HALTED
     assert halted["args_recorded"] == {"doc_id": "q4-report"}
+
+
+def test_a_call_missing_an_argument_is_refused_not_authorised(workspace):
+    """A call that cannot run must not leave a record saying it was allowed.
+
+    Partial binding wrote `allow` and left the TypeError to the body, so the log
+    claimed an authorised call for something that never was one (§3.1 step 1b).
+    """
+    workspace(ALLOW_ALL)
+
+    @guard()
+    def send(to: str, body: str) -> str:  # pragma: no cover - must never run
+        raise AssertionError("body ran without every argument it requires")
+
+    with pytest.raises(Denied):
+        send("ana@example.com")
+    written = record.read()[0]
+    assert written["effect"] == "deny"
+    assert written["code"] == ARGUMENTS_REJECTED
+    assert "body" in written["reason"]
 
 
 def test_an_unspent_approval_id_is_not_recorded(workspace):
