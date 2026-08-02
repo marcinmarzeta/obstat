@@ -9,4 +9,4 @@ from .policy import PolicyError
 from .record import note
 
 __all__ = ["Denied", "PolicyError", "Subject", "guard", "note", "set_subject_resolver"]
-__version__ = "0.4.0"
+__version__ = "0.5.0"
