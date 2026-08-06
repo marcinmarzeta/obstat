@@ -511,7 +511,7 @@ fragment, so one failed write costs one record instead of two — `obstat verify
 reports the fragment and everything after it still reads.
 
 ```json
-{"schema": 6,
+{"schema": 7,
  "id": "6430f1a38f8e470a898ca9a116dfb4cc",
  "ts": 1785545412.241792,
  "phase": "decision",
@@ -527,6 +527,7 @@ reports the fragment and everything after it still reads.
  "approval_id": "d41b88f29a43",
  "approved_by": "ana",
  "subject_verified": false,
+ "run": "9c1e40b7ad52",
  "prev": "sha256:1f0c4b7d…",
  "hash": "sha256:9d2ae410…"}
 ```
@@ -546,7 +547,8 @@ the grounds `via` is.
 
 Schema 2 added `prev` and `hash`; schema 3 added `code`; schema 4 added
 `args_recorded` (§6.1); schema 5 added `policy` and, on outcome records, `noted`
-(§6.2); schema 6 added `approved_by` and stopped recording unspent approval ids.
+(§6.2); schema 6 added `approved_by` and stopped recording unspent approval ids;
+schema 7 added `run` to every record and the `run_end` record (§6.5).
 Records written at schema 1 have no chain fields and verify as *unverifiable*
 rather than as damaged — a log that predates the chain is not evidence of
 tampering.
@@ -600,8 +602,8 @@ which document, which recipient — not that the log holds a copy of the message
 ### 6.2 Outcome records
 
 ```json
-{"schema": 5, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
- "noted": {"deleted": 154, "matched": 158}, "prev": "…", "hash": "…"}
+{"schema": 7, "id": "<same id>", "ts": …, "phase": "outcome", "ok": true, "error": null,
+ "noted": {"deleted": 154, "matched": 158}, "run": "…", "prev": "…", "hash": "…"}
 ```
 
 `error` is the exception class's qualified name, never its message — messages
@@ -613,7 +615,8 @@ Written after execution, **not** durable, and never able to fail a call: `OSErro
 here is suppressed. If the process dies between the body and this line, the
 decision record stands alone and reads as "authorised, outcome unknown", which is
 the honest state. A second `fsync` for something merely informative is paying
-twice for half the value.
+twice for half the value. Whether such a record is missing because the process
+died or because the write was lost is what §6.5 separates.
 
 Outcome records are in the chain even though they are not durable. `ok` and
 `error` are worth as much to a reader as the decision itself, and a record left
@@ -749,6 +752,45 @@ Omitted where policy never ran — a halt (§3.4) or an unresolved resource deni
 before §2 is consulted, and a digest there would claim a file had a say in
 something it did not.
 
+### 6.5 Which run wrote it, and where it ended
+
+Every record carries `run`, twelve hex characters naming **one incarnation of one
+process**. It is generated on first use, not derived from the pid: a pid is
+reused within hours and does not change across a restart, which is the event this
+has to be able to name. It is regenerated when the pid changes, so a `fork()`
+child — which inherits the parent's memory, run id included — writes under its
+own.
+
+On its own exit the process appends one more record:
+
+```json
+{"schema": 7, "ts": …, "phase": "run_end", "run": "…", "prev": "…", "hash": "…"}
+```
+
+Written from `atexit`, best effort, not durable, and never allowed to raise. It
+is registered after the first record rather than at import, so importing obstat
+does not create a log.
+
+**Its absence is what carries the information.** `atexit` does not run on
+`SIGKILL`, a segfault, `os._exit` or a power cut. So a decision record with no
+outcome after it (§6.2) falls into two cases a reader can now tell apart:
+
+| the run has | reads as |
+|---|---|
+| no `run_end` | the process died — authorised, did not complete |
+| a `run_end` after that decision | the process reached its own exit, so the outcome write was lost or skipped |
+
+The second is a fault in the logging, not in the call, and it is the one worth
+chasing: a disk that filled, an `OSError` §6.2 suppressed on purpose.
+
+Position alone does not give this. Records from other calls land between a
+decision and its outcome whenever two calls overlap — the lock covers the append,
+not the body — so "something was written after it" is true of every in-flight
+call in a busy server, crash or no crash. `run_end` is a statement that the
+process finished, which is the thing being asked about.
+
+What it still does not say is whether the **body** finished. That is §8.
+
 ---
 
 ## 7. Configuration
@@ -841,6 +883,15 @@ dangling. The answers are a head published where the log's owner cannot reach it
 or append-only storage. Neither is here, so this is tamper-evidence and not proof
 against the operator.
 
+**The log says what was authorised, never what the world now holds.** §6.5 tells
+a reader whether a missing outcome record is a crash or a lost write — that is a
+fault in the logging, and it is all it is. Neither answer says whether the tool
+body ran to completion, and `noted` (§6.2), the one field describing what a call
+actually touched, rides on the record that went missing. A half-finished delete
+leaves the same log as one that never started. Reconciling effects is the tool's
+job, not this library's, and the durable half is deliberately the authorisation
+and not the outcome.
+
 **The stop file is all-or-nothing.** §3.4.
 
 **No retention or rotation on the log.** It grows without bound, and nothing says
@@ -886,6 +937,8 @@ implementation of them, with §2.3's two commands in `tests/test_cli.py`.
 | a broken policy is reported, not raised | `test_check_reports_a_broken_policy_instead_of_raising` |
 | the record is durable before the body runs | reads the log from inside the body and asserts its own decision is already there |
 | an outcome follows a decision, sharing its id | `test_outcome_is_recorded_after` |
+| a process that exits cleanly marks its own run | `TestRunMarker::test_a_clean_exit_is_marked` |
+| a killed process leaves a dangling decision and no marker | `TestRunMarker::test_a_killed_process_leaves_a_dangling_decision_and_no_marker` |
 | a failing body still leaves both records | `test_a_failing_body_still_leaves_both_records` |
 | nothing matching denies | `test_no_rule_is_a_deny` |
 | a missing policy is not an implicit allow | `test_missing_policy_is_not_an_implicit_allow` |

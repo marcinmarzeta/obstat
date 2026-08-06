@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -820,8 +821,10 @@ class TestConcurrency:
             assert child.wait(timeout=60) == 0
 
         entries = record.read()
-        assert len(entries) == 2 * self.CALLS * 2
+        # A decision and an outcome each, plus one run_end per child (§6.5).
+        assert len(entries) == 2 * self.CALLS * 2 + 2
         assert record.verify() == []
+        assert len({entry["run"] for entry in entries}) == 2  # two writers, two runs
 
     def test_a_forked_chain_still_verifies(self, workspace):
         """What a second process does, done deliberately: carry on from the
@@ -848,6 +851,70 @@ class TestConcurrency:
         # Every `prev` still names a record earlier in the file, which is all
         # verification asks of it — a fork is not damage.
         assert record.verify() == []
+
+
+MARKER_CHILD = """
+import pathlib, sys, time
+from obstat import guard
+
+
+@guard()
+def touch(n: int) -> int:
+    if len(sys.argv) > 1:
+        pathlib.Path(sys.argv[1]).write_text("in the body")
+        time.sleep(60)  # killed here: no outcome record, and no run_end either
+    return n
+
+
+touch(1)
+"""
+
+
+class TestRunMarker:
+    """§6.5. A decision with no outcome after it is either a process that died or
+    a write that was lost, and those are different faults. Real processes, because
+    the whole distinction is about one of them not reaching its own exit — which
+    is not something a test can fake in-process.
+    """
+
+    @staticmethod
+    def script(tmp_path):
+        path = tmp_path / "marker-child.py"
+        path.write_text(MARKER_CHILD, encoding="utf-8")
+        return path
+
+    def test_a_clean_exit_is_marked(self, workspace, tmp_path):
+        workspace(ALLOW_ALL)
+        subprocess.run([sys.executable, str(self.script(tmp_path))], check=True, timeout=60)
+
+        entries = record.read()
+        assert [entry["phase"] for entry in entries] == ["decision", "outcome", "run_end"]
+        # One incarnation wrote all three, which is what makes the marker readable
+        # as "that run finished" rather than "some process did".
+        assert len({entry["run"] for entry in entries}) == 1
+        assert record.verify() == []
+
+    def test_a_killed_process_leaves_a_dangling_decision_and_no_marker(self, workspace, tmp_path):
+        workspace(ALLOW_ALL)
+        in_body = tmp_path / "in-body"
+        child = subprocess.Popen([sys.executable, str(self.script(tmp_path)), str(in_body)])
+        deadline = time.time() + 30
+        while not in_body.exists():
+            assert time.time() < deadline, "the child never reached the body"
+            time.sleep(0.01)
+        child.kill()  # SIGKILL, or TerminateProcess: atexit does not get to run
+        child.wait(timeout=60)
+
+        entries = record.read()
+        assert [entry["phase"] for entry in entries] == ["decision"]
+        assert record.verify() == []
+
+    def test_a_fork_child_does_not_write_under_its_parents_run(self, workspace):
+        """A `fork()` child inherits these globals; it must not inherit the id."""
+        workspace(ALLOW_ALL)
+        inherited = record._run_id()
+        record._run = (os.getpid() + 1, inherited)  # what the child would wake up holding
+        assert record._run_id() != inherited
 
 
 async def test_an_approval_survives_a_real_mcp_server(workspace):

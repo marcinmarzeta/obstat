@@ -80,7 +80,7 @@ The agent retries with the id, the call runs — and this is the product, one li
 in `.obstat/decisions.jsonl` (digests shortened here, real otherwise):
 
 ```json
-{"schema": 6,
+{"schema": 7,
  "id": "2216c19533ec49619a324147d9e46614",
  "ts": 1785683369.215668,
  "phase": "decision",
@@ -96,6 +96,7 @@ in `.obstat/decisions.jsonl` (digests shortened here, real otherwise):
  "policy": "sha256:49bfa9f3…",
  "subject_verified": false,
  "approved_by": "ana",
+ "run": "9c1e40b7ad52",
  "prev": "sha256:47a358d0…",
  "hash": "sha256:c1c3cf1b…"}
 ```
@@ -228,6 +229,13 @@ every other parameter name, `subject` included, stays the tool's own.
 Step 8 is deliberately not durable. If the process dies between 7 and 8 the record
 reads "authorised, outcome unknown", which is the honest state; paying for a second
 `fsync` to say something merely informative is the wrong trade.
+
+Every record carries `run`, one process incarnation, and a process appends a
+`run_end` record on its own exit. So the two ways an outcome goes missing read
+differently: a dangling decision under a run with no `run_end` is a process that
+died, one under a run that ended cleanly is a write that was lost. `atexit` does
+not run on `SIGKILL` or a power cut, which is what makes the absence mean
+something (§6.5).
 
 ## Operator commands
 

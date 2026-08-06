@@ -12,6 +12,7 @@ not tamper-proof: see §8 for what it still does not prove.
 
 from __future__ import annotations
 
+import atexit
 import contextlib
 import hashlib
 import json
@@ -27,7 +28,7 @@ from typing import Any
 
 from . import paths
 
-SCHEMA = 6
+SCHEMA = 7
 
 # What the running tool body has asked to have recorded about what it did (§6.2).
 # A ContextVar rather than a thread local, so an async tool nested inside another
@@ -73,6 +74,46 @@ _chain: tuple[str, str | None] | None = None
 # worth it only if a server ever makes enough guarded calls for one fsync at a
 # time to be the thing that hurts.
 _chain_lock = threading.Lock()
+
+# (pid, run id) of this process incarnation (§6.5), and whether its exit marker
+# has been registered.
+_run: tuple[int, str] | None = None
+_end_registered = False
+
+
+def _run_id() -> str:
+    """Identifies one incarnation of one process — not the machine, not the pid.
+
+    A pid is reused within hours and says nothing about restarts, which is the
+    event this has to be able to name. Regenerated when the pid changes, because
+    a `fork()` child inherits this module's globals: sharing the parent's run id
+    would let the child's exit marker (§6.5) claim the parent's run had ended.
+    """
+    global _run
+    if _run is None or _run[0] != os.getpid():
+        _run = (os.getpid(), uuid.uuid4().hex[:12])
+    return _run[1]
+
+
+def _mark_run_end() -> None:
+    """A record saying this process reached its own exit (§6.5).
+
+    Registered with `atexit` after the first record, so importing obstat never
+    creates a log. Not durable, and never allowed to raise: it is written on the
+    way out, where a traceback would be the last thing anyone sees.
+
+    Its *absence* is the point. `atexit` does not run on `SIGKILL`, a segfault or
+    a power cut, so a decision left dangling under a run that has no marker is
+    consistent with the crash it looks like — and one under a run that has a
+    marker after it means the process survived the call and the outcome write was
+    lost instead, which is a different fault.
+    """
+    # A log this process never wrote to — the path moved, or a test moved it —
+    # gets no marker: a run_end alone says a run ended that left nothing behind.
+    if not paths.log().exists():
+        return
+    with contextlib.suppress(Exception):
+        _append({"schema": SCHEMA, "ts": time.time(), "phase": "run_end"}, durable=False)
 
 
 def digest(args: dict[str, Any]) -> str:
@@ -133,14 +174,14 @@ def _tail_hash(path: Path) -> str | None:
 
 
 def _append(entry: dict[str, Any], *, durable: bool) -> None:
-    global _chain
+    global _chain, _end_registered
     path = paths.log()
     path.parent.mkdir(parents=True, exist_ok=True)
     created = not path.exists()
     with _chain_lock:
         if _chain is None or _chain[0] != str(path):
             _chain = (str(path), _tail_hash(path))
-        chained = {**entry, "prev": _chain[1]}
+        chained = {**entry, "run": _run_id(), "prev": _chain[1]}
         chained["hash"] = _chain_hash(chained)
         line = (json.dumps(chained, separators=(",", ":"), default=str) + "\n").encode("utf-8")
         # One record, one write() syscall: concurrent writers interleave records
@@ -169,6 +210,9 @@ def _append(entry: dict[str, Any], *, durable: bool) -> None:
         # Only after the write, so a record that failed to land is not the one the
         # next record claims to follow.
         _chain = (str(path), chained["hash"])
+        if not _end_registered:
+            atexit.register(_mark_run_end)
+            _end_registered = True
     if durable and created:
         # fsync on the file does not make its directory entry durable, so the very
         # first record could survive as data with nothing pointing at it. Only the
@@ -243,7 +287,8 @@ def outcome(
     If the process dies mid-call the decision record still stands alone, which
     reads as "authorised, outcome unknown" — the honest state. Blocking the
     caller on a second fsync to record something that is only informative would
-    be paying the cost twice for half the value.
+    be paying the cost twice for half the value. Which of the two ways it went
+    missing — a crash, or a write that was lost — is what §6.5 is for.
 
     `noted` is whatever the body passed to `note()`, and is the only thing in the
     log describing what the call *did* rather than what it was allowed to do.
